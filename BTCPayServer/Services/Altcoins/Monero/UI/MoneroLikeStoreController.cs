@@ -1,3 +1,4 @@
+#if ALTCOINS
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
@@ -6,28 +7,29 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using BTCPayServer.Client;
 using BTCPayServer.Data;
+using BTCPayServer.Filters;
 using BTCPayServer.Models;
+using BTCPayServer.Payments;
+using BTCPayServer.Security;
 using BTCPayServer.Services.Altcoins.Monero.Configuration;
 using BTCPayServer.Services.Altcoins.Monero.Payments;
 using BTCPayServer.Services.Altcoins.Monero.RPC.Models;
 using BTCPayServer.Services.Altcoins.Monero.Services;
-using BTCPayServer.Payments;
-using BTCPayServer.Security;
 using BTCPayServer.Services.Stores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
-using BTCPayServer.Filters;
 
 namespace BTCPayServer.Services.Altcoins.Monero.UI
 {
     [Route("stores/{storeId}/monerolike")]
     [OnlyIfSupportAttribute("XMR")]
     [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie)]
-    [Authorize(Policy = Policies.CanModifyStoreSettings.Key, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
-    [Authorize(Policy = Policies.CanModifyServerSettings.Key, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    [Authorize(Policy = Policies.CanModifyServerSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
     public class MoneroLikeStoreController : Controller
     {
         private readonly MoneroLikeConfiguration _MoneroLikeConfiguration;
@@ -48,7 +50,7 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
         public StoreData StoreData => HttpContext.GetStoreData();
 
         [HttpGet()]
-        public async Task<IActionResult> GetStoreMoneroLikePaymentMethods(string statusMessage)
+        public async Task<IActionResult> GetStoreMoneroLikePaymentMethods()
         {
             var monero = StoreData.GetSupportedPaymentMethods(_BtcPayNetworkProvider)
                 .OfType<MoneroSupportedPaymentMethod>();
@@ -59,10 +61,8 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                 pair => GetAccounts(pair.Key));
 
             await Task.WhenAll(accountsList.Values);
-
             return View(new MoneroLikePaymentMethodListViewModel()
             {
-                StatusMessage = statusMessage,
                 Items = _MoneroLikeConfiguration.MoneroLikeConfigurationItems.Select(pair =>
                     GetMoneroLikePaymentMethodViewModel(monero, pair.Key, excludeFilters,
                         accountsList[pair.Key].Result))
@@ -75,10 +75,11 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
             {
                 if (_MoneroRpcProvider.Summaries.TryGetValue(cryptoCode, out var summary) && summary.WalletAvailable)
                 {
-                    
-                    return _MoneroRpcProvider.WalletRpcClients[cryptoCode].SendCommandAsync<GetAccountsRequest, GetAccountsResponse>("get_accounts",new GetAccountsRequest());
+
+                    return _MoneroRpcProvider.WalletRpcClients[cryptoCode].SendCommandAsync<GetAccountsRequest, GetAccountsResponse>("get_accounts", new GetAccountsRequest());
                 }
-            }catch{}
+            }
+            catch { }
             return Task.FromResult<GetAccountsResponse>(null);
         }
 
@@ -103,14 +104,14 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                     !excludeFilters.Match(new PaymentMethodId(cryptoCode, MoneroPaymentType.Instance)),
                 Summary = summary,
                 CryptoCode = cryptoCode,
-                AccountIndex = settings?.AccountIndex ?? accountsResponse?.SubaddressAccounts?.FirstOrDefault()?.AccountIndex?? (long)0,
-                Accounts = accounts == null? null : new SelectList(accounts, nameof(SelectListItem.Value),
+                AccountIndex = settings?.AccountIndex ?? accountsResponse?.SubaddressAccounts?.FirstOrDefault()?.AccountIndex ?? 0,
+                Accounts = accounts == null ? null : new SelectList(accounts, nameof(SelectListItem.Value),
                     nameof(SelectListItem.Text))
             };
         }
 
         [HttpGet("{cryptoCode}")]
-        public async Task<IActionResult> GetStoreMoneroLikePaymentMethod(string cryptoCode, string statusMessage = null)
+        public async Task<IActionResult> GetStoreMoneroLikePaymentMethod(string cryptoCode)
         {
             cryptoCode = cryptoCode.ToUpperInvariant();
             if (!_MoneroLikeConfiguration.MoneroLikeConfigurationItems.ContainsKey(cryptoCode))
@@ -121,7 +122,6 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
             var vm = GetMoneroLikePaymentMethodViewModel(StoreData.GetSupportedPaymentMethods(_BtcPayNetworkProvider)
                     .OfType<MoneroSupportedPaymentMethod>(), cryptoCode,
                 StoreData.GetStoreBlob().GetExcludedPaymentMethods(), await GetAccounts(cryptoCode));
-            vm.StatusMessage = statusMessage;
             return View(nameof(GetStoreMoneroLikePaymentMethod), vm);
         }
 
@@ -139,18 +139,19 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
             {
                 try
                 {
-                    var newAccount = await _MoneroRpcProvider.WalletRpcClients[cryptoCode].SendCommandAsync<CreateAccountRequest, CreateAccountResponse>("create_account",new CreateAccountRequest()
+                    var newAccount = await _MoneroRpcProvider.WalletRpcClients[cryptoCode].SendCommandAsync<CreateAccountRequest, CreateAccountResponse>("create_account", new CreateAccountRequest()
                     {
                         Label = viewModel.NewAccountLabel
                     });
                     viewModel.AccountIndex = newAccount.AccountIndex;
                 }
-                catch (Exception )
+                catch (Exception)
                 {
                     ModelState.AddModelError(nameof(viewModel.AccountIndex), "Could not create new account.");
                 }
-                
-            }else if (command == "upload-wallet")
+
+            }
+            else if (command == "upload-wallet")
             {
                 var valid = true;
                 if (viewModel.WalletFile == null)
@@ -163,24 +164,26 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                     ModelState.AddModelError(nameof(viewModel.WalletKeysFile), "Please select the wallet.keys file");
                     valid = false;
                 }
-                
-                if(valid)
+
+                if (valid)
                 {
-                    if(_MoneroRpcProvider.Summaries.TryGetValue(cryptoCode, out var summary))
+                    if (_MoneroRpcProvider.Summaries.TryGetValue(cryptoCode, out var summary))
                     {
                         if (summary.WalletAvailable)
                         {
+                            TempData.SetStatusMessageModel(new StatusMessageModel()
+                            {
+                                Severity = StatusMessageModel.StatusSeverity.Error,
+                                Message = $"There is already an active wallet configured for {cryptoCode}. Replacing it would break any existing invoices"
+                            });
                             return RedirectToAction(nameof(GetStoreMoneroLikePaymentMethod),
-                                new {cryptoCode, StatusMessage = new StatusMessageModel()
-                                {
-                                    Severity = StatusMessageModel.StatusSeverity.Error,
-                                    Message = $"There is already an active wallet configured for {cryptoCode}. Replacing it would break any existing invoices"
-                                }.ToString()});
+                                new { cryptoCode });
                         }
                     }
 
                     var fileAddress = Path.Combine(configurationItem.WalletDirectory, "wallet");
-                    using (var fileStream = new FileStream(fileAddress, FileMode.Create)) {
+                    using (var fileStream = new FileStream(fileAddress, FileMode.Create))
+                    {
                         await viewModel.WalletFile.CopyToAsync(fileStream);
                         try
                         {
@@ -190,9 +193,10 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                         {
                         }
                     }
-            
+
                     fileAddress = Path.Combine(configurationItem.WalletDirectory, "wallet.keys");
-                    using (var fileStream = new FileStream(fileAddress, FileMode.Create)) {
+                    using (var fileStream = new FileStream(fileAddress, FileMode.Create))
+                    {
                         await viewModel.WalletKeysFile.CopyToAsync(fileStream);
                         try
                         {
@@ -203,7 +207,7 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                         }
 
                     }
-                    
+
                     fileAddress = Path.Combine(configurationItem.WalletDirectory, "password");
                     using (var fileStream = new StreamWriter(fileAddress, false))
                     {
@@ -216,19 +220,19 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                         {
                         }
                     }
-                    
+
                     return RedirectToAction(nameof(GetStoreMoneroLikePaymentMethod), new
                     {
                         cryptoCode,
-                        StatusMessage ="Wallet files uploaded. If it was valid, the wallet will become available soon"
-                    
+                        StatusMessage = "Wallet files uploaded. If it was valid, the wallet will become available soon"
+
                     });
                 }
             }
-            
+
             if (!ModelState.IsValid)
             {
-                
+
                 var vm = GetMoneroLikePaymentMethodViewModel(StoreData
                         .GetSupportedPaymentMethods(_BtcPayNetworkProvider)
                         .OfType<MoneroSupportedPaymentMethod>(), cryptoCode,
@@ -247,17 +251,17 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
                 AccountIndex = viewModel.AccountIndex,
                 CryptoCode = viewModel.CryptoCode
             });
-            
+
             blob.SetExcluded(new PaymentMethodId(viewModel.CryptoCode, MoneroPaymentType.Instance), !viewModel.Enabled);
             storeData.SetStoreBlob(blob);
             await _StoreRepository.UpdateStore(storeData);
             return RedirectToAction("GetStoreMoneroLikePaymentMethods",
-                new {StatusMessage = $"{cryptoCode} settings updated successfully", storeId = StoreData.Id});
+                new { StatusMessage = $"{cryptoCode} settings updated successfully", storeId = StoreData.Id });
         }
-        
+
         private void Exec(string cmd)
         {
-            
+
             var escapedArgs = cmd.Replace("\"", "\\\"", StringComparison.InvariantCulture);
 
             var process = new Process
@@ -279,13 +283,11 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
 
         public class MoneroLikePaymentMethodListViewModel
         {
-            public string StatusMessage { get; set; }
             public IEnumerable<MoneroLikePaymentMethodViewModel> Items { get; set; }
         }
 
         public class MoneroLikePaymentMethodViewModel
         {
-            public string StatusMessage { get; set; }
             public MoneroRPCProvider.MoneroLikeSummary Summary { get; set; }
             public string CryptoCode { get; set; }
             public string NewAccountLabel { get; set; }
@@ -301,3 +303,4 @@ namespace BTCPayServer.Services.Altcoins.Monero.UI
         }
     }
 }
+#endif

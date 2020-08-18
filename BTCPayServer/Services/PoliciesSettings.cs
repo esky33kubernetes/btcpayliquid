@@ -1,8 +1,5 @@
-﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Threading.Tasks;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Validation;
 using Newtonsoft.Json;
@@ -23,6 +20,12 @@ namespace BTCPayServer.Services
         public bool DiscourageSearchEngines { get; set; }
         [Display(Name = "Allow non-admins to use the internal lightning node in their stores")]
         public bool AllowLightningInternalNodeForAll { get; set; }
+        [Display(Name = "Allow non-admins to create hot wallets for their stores")]
+        public bool AllowHotWalletForAll { get; set; }
+        [Display(Name = "Allow non-admins to import their hot wallets to the node wallet")]
+        public bool AllowHotWalletRPCImportForAll { get; set; }
+        [Display(Name = "Check releases on GitHub and alert when new BTCPayServer version is available")]
+        public bool CheckForNewVersions { get; set; }
 
         [Display(Name = "Display app on website root")]
         public string RootAppId { get; set; }
@@ -32,9 +35,9 @@ namespace BTCPayServer.Services
 
         public class DomainToAppMappingItem
         {
-            [Display(Name = "Domain")][Required][HostName] public string Domain { get; set; }
-            [Display(Name = "App")][Required]  public string AppId { get; set; }
-            
+            [Display(Name = "Domain")] [Required] [HostName] public string Domain { get; set; }
+            [Display(Name = "App")] [Required] public string AppId { get; set; }
+
             public AppType AppType { get; set; }
         }
     }

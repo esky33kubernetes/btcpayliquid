@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System;
 using System.Threading.Tasks;
 using BTCPayServer.Configuration;
 using BTCPayServer.Services;
-using Microsoft.Extensions.Hosting;
 
 namespace BTCPayServer.HostedServices
 {
@@ -21,9 +18,6 @@ namespace BTCPayServer.HostedServices
 
         internal override Task[] InitializeTasks()
         {
-            // TODO: We should report auto configured services (like bitcoind, lnd or clightning)
-            if (string.IsNullOrEmpty(_options.TorrcFile))
-                return Array.Empty<Task>();
             return new Task[] { CreateLoopTask(RefreshTorServices) };
         }
 

@@ -1,24 +1,12 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
-using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Controllers;
-using BTCPayServer.Data;
-using BTCPayServer.Events;
-using BTCPayServer.Models;
 using BTCPayServer.Models.AppViewModels;
-using BTCPayServer.Models.StoreViewModels;
-using BTCPayServer.Payments.Changelly;
-using BTCPayServer.Payments.Changelly.Models;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Rates;
-using BTCPayServer.Services.Stores;
 using BTCPayServer.Tests.Logging;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitpayClient;
 using Xunit;
@@ -31,11 +19,11 @@ namespace BTCPayServer.Tests
     {
         public CrowdfundTests(ITestOutputHelper helper)
         {
-            Logs.Tester = new XUnitLog(helper) {Name = "Tests"};
+            Logs.Tester = new XUnitLog(helper) { Name = "Tests" };
             Logs.LogProvider = new XUnitLogProvider(helper);
         }
 
-        [Fact]
+        [Fact(Timeout = TestTimeout)]
         [Trait("Integration", "Integration")]
         public async Task CanCreateAndDeleteCrowdfundApp()
         {
@@ -72,10 +60,10 @@ namespace BTCPayServer.Tests
                 Assert.Empty(appList.Apps);
             }
         }
-        
-        
-        
-        [Fact]
+
+
+
+        [Fact(Timeout = TestTimeout)]
         [Trait("Integration", "Integration")]
         public async Task CanContributeOnlyWhenAllowed()
         {
@@ -92,16 +80,16 @@ namespace BTCPayServer.Tests
                 Assert.IsType<RedirectToActionResult>(apps.CreateApp(vm).Result);
                 var appId = Assert.IsType<ListAppsViewModel>(Assert.IsType<ViewResult>(apps.ListApps().Result).Model)
                     .Apps[0].Id;
-                
+
                 //Scenario 1: Not Enabled - Not Allowed
                 var crowdfundViewModel = Assert.IsType<UpdateCrowdfundViewModel>(Assert
                     .IsType<ViewResult>(apps.UpdateCrowdfund(appId).Result).Model);
                 crowdfundViewModel.TargetCurrency = "BTC";
                 crowdfundViewModel.Enabled = false;
                 crowdfundViewModel.EndDate = null;
-                
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
-                
+
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
+
                 var anonAppPubsController = tester.PayTester.GetController<AppsPublicController>();
                 var publicApps = user.GetController<AppsPublicController>();
 
@@ -110,9 +98,9 @@ namespace BTCPayServer.Tests
                 {
                     Amount = new decimal(0.01)
                 }, default));
-                
+
                 Assert.IsType<NotFoundResult>(await anonAppPubsController.ViewCrowdfund(appId, string.Empty));
-                
+
                 //Scenario 2: Not Enabled But Admin - Allowed
                 Assert.IsType<OkObjectResult>(await publicApps.ContributeToCrowdfund(appId, new ContributeToCrowdfund()
                 {
@@ -121,53 +109,53 @@ namespace BTCPayServer.Tests
                 }, default));
                 Assert.IsType<ViewResult>(await publicApps.ViewCrowdfund(appId, string.Empty));
                 Assert.IsType<NotFoundResult>(await anonAppPubsController.ViewCrowdfund(appId, string.Empty));
-                
+
                 //Scenario 3: Enabled But Start Date > Now - Not Allowed
-                crowdfundViewModel.StartDate= DateTime.Today.AddDays(2);
+                crowdfundViewModel.StartDate = DateTime.Today.AddDays(2);
                 crowdfundViewModel.Enabled = true;
-                
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
+
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
                 Assert.IsType<NotFoundObjectResult>(await anonAppPubsController.ContributeToCrowdfund(appId, new ContributeToCrowdfund()
                 {
                     Amount = new decimal(0.01)
                 }, default));
-                
+
                 //Scenario 4: Enabled But End Date < Now - Not Allowed
-                
-                crowdfundViewModel.StartDate= DateTime.Today.AddDays(-2);
-                crowdfundViewModel.EndDate= DateTime.Today.AddDays(-1);
+
+                crowdfundViewModel.StartDate = DateTime.Today.AddDays(-2);
+                crowdfundViewModel.EndDate = DateTime.Today.AddDays(-1);
                 crowdfundViewModel.Enabled = true;
-                
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
+
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
                 Assert.IsType<NotFoundObjectResult>(await anonAppPubsController.ContributeToCrowdfund(appId, new ContributeToCrowdfund()
                 {
                     Amount = new decimal(0.01)
                 }, default));
-                
-                
+
+
                 //Scenario 5: Enabled and within correct timeframe, however target is enforced and Amount is Over - Not Allowed
-                crowdfundViewModel.StartDate= DateTime.Today.AddDays(-2);
-                crowdfundViewModel.EndDate= DateTime.Today.AddDays(2);
+                crowdfundViewModel.StartDate = DateTime.Today.AddDays(-2);
+                crowdfundViewModel.EndDate = DateTime.Today.AddDays(2);
                 crowdfundViewModel.Enabled = true;
                 crowdfundViewModel.TargetAmount = 1;
                 crowdfundViewModel.TargetCurrency = "BTC";
                 crowdfundViewModel.EnforceTargetAmount = true;
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
                 Assert.IsType<NotFoundObjectResult>(await anonAppPubsController.ContributeToCrowdfund(appId, new ContributeToCrowdfund()
                 {
                     Amount = new decimal(1.01)
                 }, default));
-                
+
                 //Scenario 6: Allowed
                 Assert.IsType<OkObjectResult>(await anonAppPubsController.ContributeToCrowdfund(appId, new ContributeToCrowdfund()
                 {
                     Amount = new decimal(0.05)
                 }, default));
-                
+
             }
         }
 
-        [Fact]
+        [Fact(Timeout = TestTimeout)]
         [Trait("Integration", "Integration")]
         public async Task CanComputeCrowdfundModel()
         {
@@ -195,20 +183,20 @@ namespace BTCPayServer.Tests
                 crowdfundViewModel.TargetCurrency = "BTC";
                 crowdfundViewModel.UseAllStoreInvoices = true;
                 crowdfundViewModel.EnforceTargetAmount = true;
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
-                
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
+
                 var anonAppPubsController = tester.PayTester.GetController<AppsPublicController>();
                 var publicApps = user.GetController<AppsPublicController>();
 
                 var model = Assert.IsType<ViewCrowdfundViewModel>(Assert
                     .IsType<ViewResult>(publicApps.ViewCrowdfund(appId, String.Empty).Result).Model);
-                
-                
-                Assert.Equal(crowdfundViewModel.TargetAmount, model.TargetAmount );
-                Assert.Equal(crowdfundViewModel.EndDate, model.EndDate );
-                Assert.Equal(crowdfundViewModel.StartDate, model.StartDate );
-                Assert.Equal(crowdfundViewModel.TargetCurrency, model.TargetCurrency );
-                Assert.Equal(0m, model.Info.CurrentAmount );
+
+
+                Assert.Equal(crowdfundViewModel.TargetAmount, model.TargetAmount);
+                Assert.Equal(crowdfundViewModel.EndDate, model.EndDate);
+                Assert.Equal(crowdfundViewModel.StartDate, model.StartDate);
+                Assert.Equal(crowdfundViewModel.TargetCurrency, model.TargetCurrency);
+                Assert.Equal(0m, model.Info.CurrentAmount);
                 Assert.Equal(0m, model.Info.CurrentPendingAmount);
                 Assert.Equal(0m, model.Info.ProgressPercentage);
 
@@ -226,11 +214,11 @@ namespace BTCPayServer.Tests
                     FullNotifications = true
                 }, Facade.Merchant);
 
-                
+
                 model = Assert.IsType<ViewCrowdfundViewModel>(Assert
                     .IsType<ViewResult>(publicApps.ViewCrowdfund(appId, String.Empty).Result).Model);
-                
-                Assert.Equal(0m ,model.Info.CurrentAmount);
+
+                Assert.Equal(0m, model.Info.CurrentAmount);
                 Assert.Equal(1m, model.Info.CurrentPendingAmount);
                 Assert.Equal(0m, model.Info.ProgressPercentage);
                 Assert.Equal(1m, model.Info.PendingProgressPercentage);
@@ -253,7 +241,7 @@ namespace BTCPayServer.Tests
                 Assert.Contains(AppService.GetAppInternalTag(appId), invoiceEntity.InternalTags);
 
                 crowdfundViewModel.UseAllStoreInvoices = false;
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
 
                 Logs.Tester.LogInformation("Because UseAllStoreInvoices is false, let's make sure the invoice is not tagged");
                 invoice = user.BitPay.CreateInvoice(new Invoice()
@@ -272,7 +260,7 @@ namespace BTCPayServer.Tests
                 Logs.Tester.LogInformation("After turning setting a softcap, let's check that only actual payments are counted");
                 crowdfundViewModel.EnforceTargetAmount = false;
                 crowdfundViewModel.UseAllStoreInvoices = true;
-                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel).Result);
+                Assert.IsType<RedirectToActionResult>(apps.UpdateCrowdfund(appId, crowdfundViewModel, "save").Result);
                 invoice = user.BitPay.CreateInvoice(new Invoice()
                 {
                     Buyer = new Buyer() { email = "test@fwf.com" },
@@ -295,9 +283,9 @@ namespace BTCPayServer.Tests
                 });
             }
 
-            
+
         }
-        
+
     }
 
 

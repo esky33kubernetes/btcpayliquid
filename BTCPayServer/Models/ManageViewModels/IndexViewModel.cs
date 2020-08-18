@@ -1,9 +1,4 @@
-﻿using BTCPayServer.Validation;
-using System;
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace BTCPayServer.Models.ManageViewModels
 {
@@ -26,11 +21,6 @@ namespace BTCPayServer.Models.ManageViewModels
         [Display(Name = "Phone number")]
         [MaxLength(50)]
         public string PhoneNumber { get; set; }
-
-        public string StatusMessage
-        {
-            get; set;
-        }
 
     }
 }

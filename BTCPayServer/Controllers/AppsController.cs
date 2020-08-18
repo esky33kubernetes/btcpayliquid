@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using BTCPayServer.Data;
@@ -9,13 +8,9 @@ using BTCPayServer.Security;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Services.Mails;
 using BTCPayServer.Services.Rates;
-using Ganss.XSS;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using NBitcoin;
-using NBitcoin.DataEncoders;
 
 namespace BTCPayServer.Controllers
 {
@@ -42,21 +37,52 @@ namespace BTCPayServer.Controllers
             _AppService = AppService;
         }
 
-        private UserManager<ApplicationUser> _UserManager;
-        private ApplicationDbContextFactory _ContextFactory;
+        private readonly UserManager<ApplicationUser> _UserManager;
+        private readonly ApplicationDbContextFactory _ContextFactory;
         private readonly EventAggregator _EventAggregator;
-        private BTCPayNetworkProvider _NetworkProvider;
+        private readonly BTCPayNetworkProvider _NetworkProvider;
         private readonly CurrencyNameTable _currencies;
         private readonly EmailSenderFactory _emailSenderFactory;
-        private AppService _AppService;
+        private readonly AppService _AppService;
 
-        [TempData]
-        public string StatusMessage { get; set; }
         public string CreatedAppId { get; set; }
 
-        public async Task<IActionResult> ListApps()
+        public async Task<IActionResult> ListApps(
+            string sortOrder = null,
+            string sortOrderColumn = null
+        )
         {
             var apps = await _AppService.GetAllApps(GetUserId());
+
+            if (sortOrder != null && sortOrderColumn != null) 
+            {
+                apps = apps.OrderByDescending(app => 
+                    {
+                        switch (sortOrderColumn)
+                        {
+                            case nameof(app.AppName):
+                                return app.AppName;
+                            case nameof(app.StoreName):
+                                return app.StoreName;
+                            case nameof(app.AppType):
+                                return app.AppType;
+                            default:
+                                return app.Id;
+                        }
+                    }).ToArray();
+
+                switch (sortOrder)
+                {
+                    case "desc":
+                        ViewData[$"{sortOrderColumn}SortOrder"] = "asc";
+                        break;
+                    case "asc":
+                        apps = apps.Reverse().ToArray();
+                        ViewData[$"{sortOrderColumn}SortOrder"] = "desc";
+                        break;
+                }
+            }
+            
             return View(new ListAppsViewModel()
             {
                 Apps = apps
@@ -71,7 +97,7 @@ namespace BTCPayServer.Controllers
             if (appData == null)
                 return NotFound();
             if (await _AppService.DeleteApp(appData))
-                StatusMessage = "App removed successfully";
+                TempData[WellKnownTempData.SuccessMessage] = "App removed successfully";
             return RedirectToAction(nameof(ListApps));
         }
 
@@ -82,12 +108,12 @@ namespace BTCPayServer.Controllers
             var stores = await _AppService.GetOwnedStores(GetUserId());
             if (stores.Length == 0)
             {
-                StatusMessage = new StatusMessageModel()
+                TempData.SetStatusMessageModel(new StatusMessageModel()
                 {
                     Html =
-                        $"Error: You need to create at least one store. <a href='{(Url.Action("CreateStore", "UserStores"))}'>Create store</a>",
+                        $"Error: You need to create at least one store. <a href='{(Url.Action("CreateStore", "UserStores"))}' class='alert-link'>Create store</a>",
                     Severity = StatusMessageModel.StatusSeverity.Error
-                }.ToString();
+                });
                 return RedirectToAction(nameof(ListApps));
             }
             var vm = new CreateAppViewModel();
@@ -102,12 +128,12 @@ namespace BTCPayServer.Controllers
             var stores = await _AppService.GetOwnedStores(GetUserId());
             if (stores.Length == 0)
             {
-                StatusMessage = new StatusMessageModel()
+                TempData.SetStatusMessageModel(new StatusMessageModel()
                 {
                     Html =
-                        $"Error: You need to create at least one store. <a href='{(Url.Action("CreateStore", "UserStores"))}'>Create store</a>",
+                        $"Error: You need to create at least one store. <a href='{(Url.Action("CreateStore", "UserStores"))}' class='alert-link'>Create store</a>",
                     Severity = StatusMessageModel.StatusSeverity.Error
-                }.ToString();
+                });
                 return RedirectToAction(nameof(ListApps));
             }
             var selectedStore = vm.SelectedStore;
@@ -124,17 +150,17 @@ namespace BTCPayServer.Controllers
 
             if (!stores.Any(s => s.Id == selectedStore))
             {
-                StatusMessage = "Error: You are not owner of this store";
+                TempData[WellKnownTempData.ErrorMessage] = "You are not owner of this store";
                 return RedirectToAction(nameof(ListApps));
             }
             var appData = new AppData
             {
-                StoreDataId = selectedStore, 
-                Name = vm.Name, 
+                StoreDataId = selectedStore,
+                Name = vm.Name,
                 AppType = appType.ToString()
             };
             await _AppService.UpdateOrCreateApp(appData);
-            StatusMessage = "App successfully created";
+            TempData[WellKnownTempData.SuccessMessage] = "App successfully created";
             CreatedAppId = appData.Id;
 
             switch (appType)
@@ -168,7 +194,7 @@ namespace BTCPayServer.Controllers
             return _AppService.GetAppDataIfOwner(GetUserId(), appId, type);
         }
 
-        
+
         private string GetUserId()
         {
             return _UserManager.GetUserId(User);

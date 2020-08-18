@@ -4,7 +4,7 @@
 }
 
 
-<partial name="_StatusMessage" for="@TempData["StatusMessage"]"/>
+<partial name="_StatusMessage" />
 @if (!this.ViewContext.ModelState.IsValid)
 {
     <div asp-validation-summary="All" class="text-danger"></div>
@@ -31,6 +31,21 @@
             <input asp-for="AllowLightningInternalNodeForAll" type="checkbox" class="form-check-input"/>
             <label asp-for="AllowLightningInternalNodeForAll" class="form-check-label"></label>
             <span asp-validation-for="AllowLightningInternalNodeForAll" class="text-danger"></span>
+        </div>
+        <div class="form-check">
+            <input asp-for="AllowHotWalletForAll" type="checkbox" class="form-check-input"/>
+            <label asp-for="AllowHotWalletForAll" class="form-check-label"></label>
+            <span asp-validation-for="AllowHotWalletForAll" class="text-danger"></span>
+        </div>
+        <div class="form-check">
+            <input asp-for="AllowHotWalletRPCImportForAll" type="checkbox" class="form-check-input"/>
+            <label asp-for="AllowHotWalletRPCImportForAll" class="form-check-label"></label>
+            <span asp-validation-for="AllowHotWalletRPCImportForAll" class="text-danger"></span>
+        </div>
+        <div class="form-check">
+            <input asp-for="CheckForNewVersions" type="checkbox" class="form-check-input" />
+            <label asp-for="CheckForNewVersions" class="form-check-label"></label>
+            <span asp-validation-for="CheckForNewVersions" class="text-danger"></span>
         </div>
     </div>
     <div class="form-group">

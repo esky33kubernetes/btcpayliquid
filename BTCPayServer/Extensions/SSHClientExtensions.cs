@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.SSH;
@@ -71,22 +69,26 @@ namespace BTCPayServer
             var tcs = new TaskCompletionSource<SSHCommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             new Thread(() =>
             {
-                sshCommand.BeginExecute(ar =>
+                try
                 {
-                    try
+                    sshCommand.BeginExecute(ar =>
                     {
-                        sshCommand.EndExecute(ar);
-                        tcs.TrySetResult(CreateSSHCommandResult(sshCommand));
-                    }
-                    catch (Exception ex)
-                    {
-                        tcs.TrySetException(ex);
-                    }
-                    finally
-                    {
-                        sshCommand.Dispose();
-                    }
-                });
+                        try
+                        {
+                            sshCommand.EndExecute(ar);
+                            tcs.TrySetResult(CreateSSHCommandResult(sshCommand));
+                        }
+                        catch (Exception ex)
+                        {
+                            tcs.TrySetException(ex);
+                        }
+                        finally
+                        {
+                            sshCommand.Dispose();
+                        }
+                    });
+                }
+                catch (Exception ex) { tcs.TrySetException(ex); }
             })
             { IsBackground = true }.Start();
             return tcs.Task;
@@ -106,7 +108,7 @@ namespace BTCPayServer
         {
             if (sshClient == null)
                 throw new ArgumentNullException(nameof(sshClient));
-            
+
             TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             new Thread(() =>
             {
