@@ -24,7 +24,7 @@ services:
       TEST_MERCHANTLIGHTNINGD: "type=clightning;server=unix://etc/merchant_lightningd_datadir/lightning-rpc"
       TEST_CUSTOMERLIGHTNINGD: "type=clightning;server=unix://etc/customer_lightningd_datadir/lightning-rpc"
       TEST_MERCHANTCHARGE: "type=charge;server=http://lightning-charged:9112/;api-token=foiewnccewuify;allowinsecure=true"
-      TEST_MERCHANTLND: "https://lnd:lnd@merchant_lnd:8080/"
+      TEST_MERCHANTLND: "http://lnd:lnd@merchant_lnd:8080/"
       TESTS_INCONTAINER: "true"
       TESTS_SSHCONNECTION: "root@sshd:22"
       TESTS_SSHPASSWORD: ""
@@ -69,19 +69,22 @@ services:
         - "sshd_datadir:/root/.ssh"
 
   devlnd: 
-    image: btcpayserver/bitcoin:0.19.0.1
+    image: btcpayserver/bitcoin:0.21.0
     environment:
       BITCOIN_NETWORK: regtest
+      BITCOIN_WALLETDIR: "/data/wallets"
       BITCOIN_EXTRA_ARGS: |
         deprecatedrpc=signrawtransaction
         connect=bitcoind:39388
+        fallbackfee=0.0002
+        rpcallowip=0.0.0.0/0
     links:
       - nbxplorer
       - postgres
       - customer_lnd
       - merchant_lnd
   nbxplorer:
-    image: nicolasdorier/nbxplorer:2.1.40
+    image: nicolasdorier/nbxplorer:2.1.49
     restart: unless-stopped
     ports:
       - "32838:32838"
@@ -115,19 +118,22 @@ services:
 
   bitcoind:
     restart: unless-stopped
-    image: btcpayserver/bitcoin:0.19.0.1
+    image: btcpayserver/bitcoin:0.21.0
     environment:
       BITCOIN_NETWORK: regtest
+      BITCOIN_WALLETDIR: "/data/wallets"
       BITCOIN_EXTRA_ARGS: |-
         rpcuser=ceiwHEbqWI83
         rpcpassword=DwubwWsoo3
         rpcport=43782
         rpcbind=0.0.0.0:43782
+        rpcallowip=0.0.0.0/0
         port=39388
         whitelist=0.0.0.0/0
         zmqpubrawblock=tcp://0.0.0.0:28332
         zmqpubrawtx=tcp://0.0.0.0:28333
         deprecatedrpc=signrawtransaction
+        fallbackfee=0.0002
     ports: 
       - "43782:43782"
       - "39388:39388"
@@ -140,7 +146,7 @@ services:
       - "bitcoin_datadir:/data"
 
   customer_lightningd:
-    image: btcpayserver/lightning:v0.9.0-1-dev
+    image: btcpayserver/lightning:v0.9.3-1-dev
     stop_signal: SIGKILL
     restart: unless-stopped
     environment: 
@@ -187,7 +193,7 @@ services:
       - merchant_lightningd
 
   merchant_lightningd:
-    image: btcpayserver/lightning:v0.9.0-1-dev
+    image: btcpayserver/lightning:v0.9.3-1-dev
     stop_signal: SIGKILL
     environment: 
       EXPOSE_TCP: "true"
@@ -211,52 +217,6 @@ services:
       - "merchant_lightningd_datadir:/root/.lightning"
     links:
       - bitcoind
-
-  litecoind:
-    restart: unless-stopped
-    image: nicolasdorier/docker-litecoin:0.16.3
-    environment:
-      BITCOIN_EXTRA_ARGS: |-
-        rpcuser=ceiwHEbqWI83
-        rpcpassword=DwubwWsoo3
-        regtest=1
-        rpcport=43782
-        port=39388
-        whitelist=0.0.0.0/0
-    ports: 
-      - "43783:43782"
-    expose:
-      - "43782" # RPC
-      - "39388" # P2P
-          
-  elementsd-liquid:
-      restart: always
-      container_name: btcpayserver_elementsd_liquid
-      image: btcpayserver/elements:0.18.1.7
-      environment:
-          ELEMENTS_CHAIN: elementsregtest
-          ELEMENTS_EXTRA_ARGS: |
-              mainchainrpcport=43782
-              mainchainrpchost=bitcoind
-              mainchainrpcuser=liquid
-              mainchainrpcpassword=liquid
-              rpcport=19332
-              rpcbind=0.0.0.0:19332
-              rpcauth=liquid:c8bf1a8961d97f224cb21224aaa8235d$$402f4a8907683d057b8c58a42940b6e54d1638322a42986ae28ebb844e603ae6
-              port=19444
-              whitelist=0.0.0.0/0
-              validatepegin=0
-              initialfreecoins=210000000000000
-              con_dyna_deploy_start=99999999999
-      expose:
-          - "19332"
-          - "19444"
-      ports:
-          - "19332:19332"
-          - "19444:19444"
-      volumes:
-          - "elementsd_liquid_datadir:/data"
-
   postgres:
     image:  postgres:9.6.5
     ports:
@@ -265,18 +225,21 @@ services:
       - "5432"
 
   merchant_lnd:
-    image: btcpayserver/lnd:v0.10.2-beta
+    image: btcpayserver/lnd:v0.12.0-beta
     restart: unless-stopped
     environment:
       LND_CHAIN: "btc"
       LND_ENVIRONMENT: "regtest"
       LND_EXPLORERURL: "http://nbxplorer:32838/"
+      LND_REST_LISTEN_HOST: http://merchant_lnd:8080
       LND_EXTRA_ARGS: |
-        restlisten=0.0.0.0:8080
+        restlisten=merchant_lnd:8080
         rpclisten=127.0.0.1:10008
-        rpclisten=0.0.0.0:10009
+        rpclisten=merchant_lnd:10009
         bitcoin.node=bitcoind
         bitcoind.rpchost=bitcoind:43782
+        bitcoind.rpcuser=ceiwHEbqWI83
+        bitcoind.rpcpass=DwubwWsoo3
         bitcoind.zmqpubrawblock=tcp://bitcoind:28332
         bitcoind.zmqpubrawtx=tcp://bitcoind:28333
         externalip=merchant_lnd:9735
@@ -284,6 +247,7 @@ services:
         no-macaroons=1
         debuglevel=debug
         trickledelay=1000
+        no-rest-tls=1
     ports:
       - "35531:8080"
     expose:
@@ -295,18 +259,21 @@ services:
       - bitcoind
 
   customer_lnd:
-    image: btcpayserver/lnd:v0.10.2-beta
+    image: btcpayserver/lnd:v0.12.0-beta
     restart: unless-stopped
     environment:
       LND_CHAIN: "btc"
       LND_ENVIRONMENT: "regtest"
       LND_EXPLORERURL: "http://nbxplorer:32838/"
+      LND_REST_LISTEN_HOST: http://customer_lnd:8080
       LND_EXTRA_ARGS: |
-        restlisten=0.0.0.0:8080
+        restlisten=customer_lnd:8080
         rpclisten=127.0.0.1:10008
-        rpclisten=0.0.0.0:10009
+        rpclisten=customer_lnd:10009
         bitcoin.node=bitcoind
         bitcoind.rpchost=bitcoind:43782
+        bitcoind.rpcuser=ceiwHEbqWI83
+        bitcoind.rpcpass=DwubwWsoo3
         bitcoind.zmqpubrawblock=tcp://bitcoind:28332
         bitcoind.zmqpubrawtx=tcp://bitcoind:28333
         externalip=customer_lnd:10009
@@ -314,6 +281,7 @@ services:
         no-macaroons=1
         debuglevel=debug
         trickledelay=1000
+        no-rest-tls=1
     ports:
       - "35532:8080"
     expose:
@@ -339,7 +307,7 @@ services:
         - "torrcdir:/usr/local/etc/tor"
         - "tor_servicesdir:/var/lib/tor/hidden_services"
   monerod:
-        image: btcpayserver/monero:0.15.0.1-amd64
+        image: btcpayserver/monero:0.17.0.0-amd64
         restart: unless-stopped
         container_name: xmr_monerod
         entrypoint: sleep 999999
@@ -349,17 +317,16 @@ services:
         ports:
             - "18081:18081"
   monero_wallet:
-        image: btcpayserver/monero:0.15.0.1-amd64
-        restart: unless-stopped
-        container_name: xmr_wallet_rpc
-        entrypoint: monero-wallet-rpc --testnet --rpc-bind-ip=0.0.0.0 --disable-rpc-login --confirm-external-bind --rpc-bind-port=18082 --non-interactive --trusted-daemon  --daemon-address=monerod:18081 --wallet-file=/wallet/wallet.keys --password-file=/wallet/password --tx-notify="/bin/sh ./scripts/notifier.sh -k -X GET https://host.docker.internal:14142/monerolikedaemoncallback/tx?cryptoCode=xmr&hash=%s"
-        ports:
-            - "18082:18082"
-        volumes:
-            - "./monero_wallet:/wallet"
-        depends_on:
+      image: btcpayserver/monero:0.17.0.0-amd64
+      restart: unless-stopped
+      container_name: xmr_wallet_rpc
+      entrypoint: monero-wallet-rpc --testnet --rpc-bind-ip=0.0.0.0 --disable-rpc-login --confirm-external-bind --rpc-bind-port=18082 --non-interactive --trusted-daemon  --daemon-address=monerod:18081 --wallet-file=/wallet/wallet.keys --password-file=/wallet/password --tx-notify="/bin/sh ./scripts/notifier.sh -k -X GET https://host.docker.internal:14142/monerolikedaemoncallback/tx?cryptoCode=xmr&hash=%s"
+      ports:
+          - "18082:18082"
+      volumes:
+          - "./monero_wallet:/wallet"
+      depends_on:
             - monerod   
-
   litecoind:
     restart: unless-stopped
     image: nicolasdorier/docker-litecoin:0.16.3

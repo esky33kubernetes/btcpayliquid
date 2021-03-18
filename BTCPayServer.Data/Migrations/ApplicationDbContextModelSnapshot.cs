@@ -4,6 +4,7 @@ using BTCPayServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 namespace BTCPayServer.Migrations
 {
@@ -106,6 +107,12 @@ namespace BTCPayServer.Migrations
 
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("Created")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DisabledNotifications")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Email")
@@ -222,6 +229,8 @@ namespace BTCPayServer.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OrderId");
+
                     b.HasIndex("StoreDataId");
 
                     b.HasIndex("Id", "CurrentRefundId");
@@ -240,12 +249,58 @@ namespace BTCPayServer.Migrations
                     b.Property<string>("Message")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("Severity")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTimeOffset>("Timestamp")
                         .HasColumnType("TEXT");
 
                     b.HasKey("InvoiceDataId", "UniqueId");
 
                     b.ToTable("InvoiceEvents");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.InvoiceSearchData", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasAnnotation("MySql:ValueGeneratedOnAdd", true)
+                        .HasAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.SerialColumn)
+                        .HasAnnotation("Sqlite:Autoincrement", true);
+
+                    b.Property<string>("InvoiceDataId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvoiceDataId");
+
+                    b.HasIndex("Value");
+
+                    b.ToTable("InvoiceSearches");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.InvoiceWebhookDeliveryData", b =>
+                {
+                    b.Property<string>("InvoiceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeliveryId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("InvoiceId", "DeliveryId");
+
+                    b.HasIndex("DeliveryId")
+                        .IsUnique();
+
+                    b.HasIndex("InvoiceId")
+                        .IsUnique();
+
+                    b.ToTable("InvoiceWebhookDeliveries");
                 });
 
             modelBuilder.Entity("BTCPayServer.Data.NotificationData", b =>
@@ -522,7 +577,8 @@ namespace BTCPayServer.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("PullPaymentDataId")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("TEXT")
+                        .HasMaxLength(30);
 
                     b.HasKey("InvoiceDataId", "PullPaymentDataId");
 
@@ -576,6 +632,25 @@ namespace BTCPayServer.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Stores");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.StoreWebhookData", b =>
+                {
+                    b.Property<string>("StoreId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("WebhookId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("StoreId", "WebhookId");
+
+                    b.HasIndex("StoreId")
+                        .IsUnique();
+
+                    b.HasIndex("WebhookId")
+                        .IsUnique();
+
+                    b.ToTable("StoreWebhooks");
                 });
 
             modelBuilder.Entity("BTCPayServer.Data.StoredFile", b =>
@@ -684,6 +759,46 @@ namespace BTCPayServer.Migrations
                     b.HasKey("WalletDataId", "TransactionId");
 
                     b.ToTable("WalletTransactions");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.WebhookData", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT")
+                        .HasMaxLength(25);
+
+                    b.Property<byte[]>("Blob")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Webhooks");
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.WebhookDeliveryData", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT")
+                        .HasMaxLength(25);
+
+                    b.Property<byte[]>("Blob")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("WebhookId")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasMaxLength(25);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("WebhookId");
+
+                    b.ToTable("WebhookDeliveries");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -873,6 +988,29 @@ namespace BTCPayServer.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("BTCPayServer.Data.InvoiceSearchData", b =>
+                {
+                    b.HasOne("BTCPayServer.Data.InvoiceData", "InvoiceData")
+                        .WithMany("InvoiceSearchData")
+                        .HasForeignKey("InvoiceDataId")
+                        .OnDelete(DeleteBehavior.Cascade);
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.InvoiceWebhookDeliveryData", b =>
+                {
+                    b.HasOne("BTCPayServer.Data.WebhookDeliveryData", "Delivery")
+                        .WithOne()
+                        .HasForeignKey("BTCPayServer.Data.InvoiceWebhookDeliveryData", "DeliveryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("BTCPayServer.Data.InvoiceData", "Invoice")
+                        .WithOne()
+                        .HasForeignKey("BTCPayServer.Data.InvoiceWebhookDeliveryData", "InvoiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("BTCPayServer.Data.NotificationData", b =>
                 {
                     b.HasOne("BTCPayServer.Data.ApplicationUser", "ApplicationUser")
@@ -946,6 +1084,21 @@ namespace BTCPayServer.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("BTCPayServer.Data.StoreWebhookData", b =>
+                {
+                    b.HasOne("BTCPayServer.Data.StoreData", "Store")
+                        .WithOne()
+                        .HasForeignKey("BTCPayServer.Data.StoreWebhookData", "StoreId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("BTCPayServer.Data.WebhookData", "Webhook")
+                        .WithOne()
+                        .HasForeignKey("BTCPayServer.Data.StoreWebhookData", "WebhookId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("BTCPayServer.Data.StoredFile", b =>
                 {
                     b.HasOne("BTCPayServer.Data.ApplicationUser", "ApplicationUser")
@@ -957,7 +1110,8 @@ namespace BTCPayServer.Migrations
                 {
                     b.HasOne("BTCPayServer.Data.ApplicationUser", "ApplicationUser")
                         .WithMany("U2FDevices")
-                        .HasForeignKey("ApplicationUserId");
+                        .HasForeignKey("ApplicationUserId")
+                        .OnDelete(DeleteBehavior.Cascade);
                 });
 
             modelBuilder.Entity("BTCPayServer.Data.UserStore", b =>
@@ -980,6 +1134,15 @@ namespace BTCPayServer.Migrations
                     b.HasOne("BTCPayServer.Data.WalletData", "WalletData")
                         .WithMany("WalletTransactions")
                         .HasForeignKey("WalletDataId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("BTCPayServer.Data.WebhookDeliveryData", b =>
+                {
+                    b.HasOne("BTCPayServer.Data.WebhookData", "Webhook")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("WebhookId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

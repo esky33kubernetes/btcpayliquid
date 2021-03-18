@@ -11,12 +11,12 @@ namespace BTCPayServer.Payments
     {
         public static LightningPaymentType Instance { get; } = new LightningPaymentType();
 
-        private LightningPaymentType()
-        {
-        }
+        private LightningPaymentType() { }
 
         public override string ToPrettyString() => "Off-Chain";
         public override string GetId() => "LightningLike";
+        public override string GetBadge() => "⚡";
+        public override string ToStringNormalized() => "LightningNetwork";
 
         public override CryptoPaymentData DeserializePaymentData(BTCPayNetworkBase network, string str)
         {
@@ -30,7 +30,7 @@ namespace BTCPayServer.Payments
 
         public override IPaymentMethodDetails DeserializePaymentMethodDetails(BTCPayNetworkBase network, string str)
         {
-            return JsonConvert.DeserializeObject<Payments.Lightning.LightningLikePaymentMethodDetails>(str);
+            return JsonConvert.DeserializeObject<LightningLikePaymentMethodDetails>(str);
         }
 
         public override string SerializePaymentMethodDetails(BTCPayNetworkBase network, IPaymentMethodDetails details)
@@ -52,10 +52,16 @@ namespace BTCPayServer.Payments
         public override string GetPaymentLink(BTCPayNetworkBase network, IPaymentMethodDetails paymentMethodDetails,
             Money cryptoInfoDue, string serverUri)
         {
-            return
-                $"lightning:{paymentMethodDetails.GetPaymentDestination().ToUpperInvariant().Replace("LIGHTNING:", "", StringComparison.InvariantCultureIgnoreCase)}";
+            var lnInvoiceTrimmedOfScheme = paymentMethodDetails.GetPaymentDestination().ToLowerInvariant()
+                .Replace("lightning:", "", StringComparison.InvariantCultureIgnoreCase);
+
+            return $"lightning:{lnInvoiceTrimmedOfScheme}";
         }
 
-        public override string InvoiceViewPaymentPartialName { get; } = "ViewLightningLikePaymentData";
+        public override string InvoiceViewPaymentPartialName { get; } = "Lightning/ViewLightningLikePaymentData";
+        public override bool IsPaymentType(string paymentType)
+        {
+            return paymentType?.Equals("offchain", StringComparison.InvariantCultureIgnoreCase) is true || base.IsPaymentType(paymentType);
+        }
     }
 }

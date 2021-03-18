@@ -7,6 +7,8 @@ using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using BTCPayServer.Lightning;
+using BTCPayServer.Lightning.CLightning;
+using BTCPayServer.Payments.Lightning;
 using BTCPayServer.Tests.Lnd;
 using BTCPayServer.Tests.Logging;
 using NBitcoin;
@@ -23,6 +25,7 @@ namespace BTCPayServer.Tests
             return new ServerTester(scope, newDb);
         }
 
+        public List<IDisposable> Resources = new List<IDisposable>();
         readonly string _Directory;
         public ServerTester(string scope, bool newDb)
         {
@@ -32,7 +35,7 @@ namespace BTCPayServer.Tests
             if (!Directory.Exists(_Directory))
                 Directory.CreateDirectory(_Directory);
 
-            NetworkProvider = new BTCPayNetworkProvider(NetworkType.Regtest);
+            NetworkProvider = new BTCPayNetworkProvider(ChainName.Regtest);
             ExplorerNode = new RPCClient(RPCCredentialString.Parse(GetEnvironment("TESTS_BTCRPCCONNECTION", "server=http://127.0.0.1:43782;ceiwHEbqWI83:DwubwWsoo3")), NetworkProvider.GetNetwork<BTCPayNetwork>("BTC").NBitcoinNetwork);
             ExplorerNode.ScanRPCCapabilities();
 
@@ -78,16 +81,57 @@ namespace BTCPayServer.Tests
             PayTester.Chains.Add("LBTC");
             PayTester.LBTCNBXplorerUri = LBTCExplorerClient.Address;
         }
+        public void ActivateETH()
+        {
+            PayTester.Chains.Add("ETH");
+        }
+
 #endif
         public void ActivateLightning()
+        {
+            ActivateLightning(LightningConnectionType.Charge);
+        }
+        public void ActivateLightning(LightningConnectionType internalNode)
         {
             var btc = NetworkProvider.GetNetwork<BTCPayNetwork>("BTC").NBitcoinNetwork;
             CustomerLightningD = LightningClientFactory.CreateClient(GetEnvironment("TEST_CUSTOMERLIGHTNINGD", "type=clightning;server=tcp://127.0.0.1:30992/"), btc);
             MerchantLightningD = LightningClientFactory.CreateClient(GetEnvironment("TEST_MERCHANTLIGHTNINGD", "type=clightning;server=tcp://127.0.0.1:30993/"), btc);
             MerchantCharge = new ChargeTester(this, "TEST_MERCHANTCHARGE", "type=charge;server=http://127.0.0.1:54938/;api-token=foiewnccewuify;allowinsecure=true", "merchant_lightningd", btc);
-            MerchantLnd = new LndMockTester(this, "TEST_MERCHANTLND", "https://lnd:lnd@127.0.0.1:35531/", "merchant_lnd", btc);
+            MerchantLnd = new LndMockTester(this, "TEST_MERCHANTLND", "http://lnd:lnd@127.0.0.1:35531/", "merchant_lnd", btc);
             PayTester.UseLightning = true;
-            PayTester.IntegratedLightning = MerchantCharge.Client.Uri;
+            PayTester.IntegratedLightning = GetLightningConnectionString(internalNode, true);
+        }
+        public string GetLightningConnectionString(LightningConnectionType? connectionType, bool isMerchant)
+        {
+            string connectionString = null;
+            if (connectionType is null)
+                return LightningSupportedPaymentMethod.InternalNode;
+            if (connectionType == LightningConnectionType.Charge)
+            {
+                if (isMerchant)
+                    connectionString = $"type=charge;server={MerchantCharge.Client.Uri.AbsoluteUri};allowinsecure=true";
+                else
+                    throw new NotSupportedException();
+            }
+            else if (connectionType == LightningConnectionType.CLightning)
+            {
+                if (isMerchant)
+                    connectionString = "type=clightning;server=" +
+                                       ((CLightningClient)MerchantLightningD).Address.AbsoluteUri;
+                else
+                    connectionString = "type=clightning;server=" +
+                                   ((CLightningClient)CustomerLightningD).Address.AbsoluteUri;
+            }
+            else if (connectionType == LightningConnectionType.LndREST)
+            {
+                if (isMerchant)
+                    connectionString = $"type=lnd-rest;server={MerchantLnd.Swagger.BaseUrl};allowinsecure=true";
+                else
+                    throw new NotSupportedException();
+            }
+            else
+                throw new NotSupportedException(connectionType.ToString());
+            return connectionString;
         }
 
         public bool Dockerized
@@ -135,12 +179,17 @@ namespace BTCPayServer.Tests
             await CustomerLightningD.Pay(bolt11);
         }
 
-        public async Task<T> WaitForEvent<T>(Func<Task> action)
+        public async Task<T> WaitForEvent<T>(Func<Task> action, Func<T, bool> correctEvent = null)
         {
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
             var sub = PayTester.GetService<EventAggregator>().Subscribe<T>(evt =>
             {
-                tcs.TrySetResult(evt);
+                if (correctEvent is null)
+                    tcs.TrySetResult(evt);
+                else if (correctEvent(evt))
+                {
+                    tcs.TrySetResult(evt);
+                }
             });
             await action.Invoke();
             var result = await tcs.Task;
@@ -197,6 +246,8 @@ namespace BTCPayServer.Tests
 
         public void Dispose()
         {
+            foreach (var r in this.Resources)
+                r.Dispose();
             Logs.Tester.LogInformation("Disposing the BTCPayTester...");
             foreach (var store in Stores)
             {

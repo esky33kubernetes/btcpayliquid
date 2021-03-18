@@ -3,13 +3,17 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.HostedServices;
 using BTCPayServer.ModelBinders;
 using BTCPayServer.Models;
 using BTCPayServer.Models.WalletViewModels;
+using BTCPayServer.Payments.PayJoin.Sender;
 using BTCPayServer.Services;
 using Microsoft.AspNetCore.Mvc;
 using NBitcoin;
+using BTCPayServer.BIP78.Sender;
 using NBitcoin.Payment;
 using NBXplorer;
 using NBXplorer.Models;
@@ -51,7 +55,7 @@ namespace BTCPayServer.Controllers
             if (sendModel.FeeSatoshiPerByte is decimal v &&
                 v > decimal.Zero)
             {
-                psbtRequest.FeePreference.ExplicitFeeRate = new FeeRate(Money.Satoshis(v), 1);
+                psbtRequest.FeePreference.ExplicitFeeRate = new FeeRate(v);
             }
             if (sendModel.NoChange)
             {
@@ -73,13 +77,19 @@ namespace BTCPayServer.Controllers
         {
             var network = NetworkProvider.GetNetwork<BTCPayNetwork>(walletId.CryptoCode);
             vm.CryptoCode = network.CryptoCode;
+
+            var derivationSchemeSettings = GetDerivationSchemeSettings(walletId);
+            if (derivationSchemeSettings == null)
+                return NotFound();
+
             vm.NBXSeedAvailable = await CanUseHotWallet() && !string.IsNullOrEmpty(await ExplorerClientProvider.GetExplorerClient(network)
-                .GetMetadataAsync<string>(GetDerivationSchemeSettings(walletId).AccountDerivation,
-                    WellknownMetadataKeys.Mnemonic));
+                .GetMetadataAsync<string>(derivationSchemeSettings.AccountDerivation, WellknownMetadataKeys.Mnemonic));
+
             if (await vm.GetPSBT(network.NBitcoinNetwork) is PSBT psbt)
             {
                 vm.Decoded = psbt.ToString();
                 vm.PSBT = psbt.ToBase64();
+                vm.PSBTHex = psbt.ToHex();
             }
 
             return View(nameof(WalletPSBT), vm ?? new WalletPSBTViewModel() { CryptoCode = walletId.CryptoCode });
@@ -95,15 +105,21 @@ namespace BTCPayServer.Controllers
                 return await WalletPSBT(walletId, vm);
             var network = NetworkProvider.GetNetwork<BTCPayNetwork>(walletId.CryptoCode);
             vm.CryptoCode = network.CryptoCode;
+
+            var derivationSchemeSettings = GetDerivationSchemeSettings(walletId);
+            if (derivationSchemeSettings == null)
+                return NotFound();
+
             vm.NBXSeedAvailable = await CanUseHotWallet() && !string.IsNullOrEmpty(await ExplorerClientProvider.GetExplorerClient(network)
-                .GetMetadataAsync<string>(GetDerivationSchemeSettings(walletId).AccountDerivation,
-                    WellknownMetadataKeys.Mnemonic));
+                .GetMetadataAsync<string>(derivationSchemeSettings.AccountDerivation, WellknownMetadataKeys.Mnemonic));
             var psbt = await vm.GetPSBT(network.NBitcoinNetwork);
             if (psbt == null)
             {
                 ModelState.AddModelError(nameof(vm.PSBT), "Invalid PSBT");
                 return View(vm);
             }
+
+            vm.PSBTHex = psbt.ToHex();
             var res = await TryHandleSigningCommands(walletId, psbt, command, new SigningContextModel(psbt));
             if (res != null)
             {
@@ -117,11 +133,11 @@ namespace BTCPayServer.Controllers
                     ModelState.Remove(nameof(vm.FileName));
                     ModelState.Remove(nameof(vm.UploadedPSBTFile));
                     vm.PSBT = psbt.ToBase64();
+                    vm.PSBTHex = psbt.ToHex();
                     vm.FileName = vm.UploadedPSBTFile?.FileName;
                     return View(vm);
 
                 case "update":
-                    var derivationSchemeSettings = GetDerivationSchemeSettings(walletId);
                     psbt = await ExplorerClientProvider.UpdatePSBT(derivationSchemeSettings, psbt);
                     if (psbt == null)
                     {
@@ -157,7 +173,7 @@ namespace BTCPayServer.Controllers
             var cloned = psbt.Clone();
             cloned = cloned.Finalize();
             await _broadcaster.Schedule(DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2.0), cloned.ExtractTransaction(), btcPayNetwork);
-            return await _payjoinClient.RequestPayjoin(bip21, derivationSchemeSettings, psbt, cancellationToken);
+            return await _payjoinClient.RequestPayjoin(bip21, new PayjoinWallet(derivationSchemeSettings), psbt, cancellationToken);
         }
 
         [HttpGet]

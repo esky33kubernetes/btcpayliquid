@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
@@ -32,10 +33,10 @@ namespace BTCPayServer.Controllers.GreenField
 
         [Authorize(Policy = Policies.CanViewPaymentRequests, AuthenticationSchemes = AuthenticationSchemes.Greenfield)]
         [HttpGet("~/api/v1/stores/{storeId}/payment-requests")]
-        public async Task<ActionResult<IEnumerable<PaymentRequestData>>> GetPaymentRequests(string storeId)
+        public async Task<ActionResult<IEnumerable<PaymentRequestData>>> GetPaymentRequests(string storeId, bool includeArchived = false)
         {
             var prs = await _paymentRequestRepository.FindPaymentRequests(
-                new PaymentRequestQuery() { StoreId = storeId, IncludeArchived = false });
+                new PaymentRequestQuery() { StoreId = storeId, IncludeArchived = includeArchived });
             return Ok(prs.Items.Select(FromModel));
         }
 

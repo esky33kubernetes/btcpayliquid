@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Amazon.Util.Internal.PlatformServices;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -17,68 +19,77 @@ namespace BTCPayServer.Services.Labels
             _linkGenerator = linkGenerator;
         }
 
-        public IEnumerable<Label> GetLabels(WalletBlobInfo walletBlobInfo, WalletTransactionInfo transactionInfo,
+        public IEnumerable<ColoredLabel> ColorizeTransactionLabels(WalletBlobInfo walletBlobInfo, WalletTransactionInfo transactionInfo,
             HttpRequest request)
         {
             foreach (var label in transactionInfo.Labels)
             {
-                if (walletBlobInfo.LabelColors.TryGetValue(label, out var color))
-                {
-                    yield return CreateLabel(label, color, request);
-                }
+                walletBlobInfo.LabelColors.TryGetValue(label.Value.Text, out var color);
+                yield return CreateLabel(label.Value, color, request);
             }
         }
 
-        public IEnumerable<Label> GetLabels(WalletBlobInfo walletBlobInfo, HttpRequest request)
+        public IEnumerable<ColoredLabel> GetWalletColoredLabels(WalletBlobInfo walletBlobInfo, HttpRequest request)
         {
             foreach (var kv in walletBlobInfo.LabelColors)
             {
-                yield return CreateLabel(kv.Key, kv.Value, request);
+                yield return CreateLabel(new RawLabel() { Text = kv.Key }, kv.Value, request);
             }
         }
 
-        private Label CreateLabel(string value, string color, HttpRequest request)
+        const string DefaultColor = "#000";
+        private ColoredLabel CreateLabel(LabelData uncoloredLabel, string color, HttpRequest request)
         {
-            if (value == null)
-                throw new ArgumentNullException(nameof(value));
-            if (color == null)
-                throw new ArgumentNullException(nameof(color));
-            if (value.StartsWith("{", StringComparison.InvariantCultureIgnoreCase))
+            if (uncoloredLabel == null)
+                throw new ArgumentNullException(nameof(uncoloredLabel));
+            color = color ?? DefaultColor;
+
+            ColoredLabel coloredLabel = new ColoredLabel()
             {
-                var jObj = JObject.Parse(value);
-                if (jObj.ContainsKey("value"))
+                Text = uncoloredLabel.Text,
+                Color = color
+            };
+            if (uncoloredLabel is ReferenceLabel refLabel)
+            {
+                var refInLabel = string.IsNullOrEmpty(refLabel.Reference) ? string.Empty : $"({refLabel.Reference})";
+                switch (uncoloredLabel.Type)
                 {
-                    var id = jObj.ContainsKey("id") ? jObj["id"].Value<string>() : string.Empty;
-                    var idInLabel = string.IsNullOrEmpty(id) ? string.Empty : $"({id})";
-                    switch (jObj["value"].Value<string>())
-                    {
-                        case "invoice":
-                            return new Label()
-                            {
-                                RawValue = value,
-                                Value = "invoice",
-                                Color = color,
-                                Tooltip = $"Received through an invoice {idInLabel}",
-                                Link = string.IsNullOrEmpty(id)
-                                    ? null
-                                    : _linkGenerator.InvoiceLink(id, request.Scheme, request.Host, request.PathBase)
-                            };
-                        case "pj-exposed":
-                            return new Label()
-                            {
-                                RawValue = value,
-                                Value = "payjoin-exposed",
-                                Color = color,
-                                Tooltip = $"This utxo was exposed through a payjoin proposal for an invoice {idInLabel}",
-                                Link = string.IsNullOrEmpty(id)
-                                    ? null
-                                    : _linkGenerator.InvoiceLink(id, request.Scheme, request.Host, request.PathBase)
-                            };
-                    }
+                    case "invoice":
+                        coloredLabel.Tooltip = $"Received through an invoice {refInLabel}";
+                        coloredLabel.Link = string.IsNullOrEmpty(refLabel.Reference)
+                                ? null
+                                : _linkGenerator.InvoiceLink(refLabel.Reference, request.Scheme, request.Host, request.PathBase);
+                        break;
+                    case "payment-request":
+                        coloredLabel.Tooltip = $"Received through a payment request {refInLabel}";
+                        coloredLabel.Link = string.IsNullOrEmpty(refLabel.Reference)
+                                ? null
+                                : _linkGenerator.PaymentRequestLink(refLabel.Reference, request.Scheme, request.Host, request.PathBase);
+                        break;
+                    case "app":
+                        coloredLabel.Tooltip = $"Received through an app {refInLabel}";
+                        coloredLabel.Link = string.IsNullOrEmpty(refLabel.Reference)
+                            ? null
+                            : _linkGenerator.AppLink(refLabel.Reference, request.Scheme, request.Host, request.PathBase);
+                        break;
+                    case "pj-exposed":
+                        coloredLabel.Tooltip = $"This utxo was exposed through a payjoin proposal for an invoice {refInLabel}";
+                        coloredLabel.Link = string.IsNullOrEmpty(refLabel.Reference)
+                            ? null
+                            : _linkGenerator.InvoiceLink(refLabel.Reference, request.Scheme, request.Host, request.PathBase);
+                        break;
                 }
             }
-
-            return new Label() { RawValue = value, Value = value, Color = color };
+            else if (uncoloredLabel is PayoutLabel payoutLabel)
+            {
+                coloredLabel.Tooltip = $"Paid a payout of a pull payment ({payoutLabel.PullPaymentId})";
+                coloredLabel.Link = string.IsNullOrEmpty(payoutLabel.PullPaymentId) || string.IsNullOrEmpty(payoutLabel.WalletId)
+                    ? null
+                    : _linkGenerator.PayoutLink(payoutLabel.WalletId,
+                        payoutLabel.PullPaymentId, request.Scheme, request.Host,
+                        request.PathBase);
+            }
+            return coloredLabel;
         }
     }
 }

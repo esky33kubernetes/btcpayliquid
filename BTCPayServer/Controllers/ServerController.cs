@@ -7,10 +7,13 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Mail;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
 using BTCPayServer.Events;
 using BTCPayServer.HostedServices;
+using BTCPayServer.Hosting;
 using BTCPayServer.Logging;
 using BTCPayServer.Models;
 using BTCPayServer.Models.AccountViewModels;
@@ -26,16 +29,19 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using Renci.SshNet;
+using AuthenticationSchemes = BTCPayServer.Abstractions.Constants.AuthenticationSchemes;
 
 namespace BTCPayServer.Controllers
 {
     [Authorize(Policy = BTCPayServer.Client.Policies.CanModifyServerSettings,
-               AuthenticationSchemes = BTCPayServer.Security.AuthenticationSchemes.Cookie)]
+               AuthenticationSchemes = AuthenticationSchemes.Cookie)]
     public partial class ServerController : Controller
     {
         private readonly UserManager<ApplicationUser> _UserManager;
@@ -47,6 +53,9 @@ namespace BTCPayServer.Controllers
         private readonly BTCPayServerOptions _Options;
         private readonly AppService _AppService;
         private readonly CheckConfigurationHostedService _sshState;
+        private readonly EventAggregator _eventAggregator;
+        private readonly CssThemeManager _cssThemeManager;
+        private readonly IOptions<ExternalServicesOptions> _externalServiceOptions;
         private readonly StoredFileRepository _StoredFileRepository;
         private readonly FileService _FileService;
         private readonly IEnumerable<IStorageProviderService> _StorageProviderServices;
@@ -63,7 +72,10 @@ namespace BTCPayServer.Controllers
             TorServices torServices,
             StoreRepository storeRepository,
             AppService appService,
-            CheckConfigurationHostedService sshState)
+            CheckConfigurationHostedService sshState,
+            EventAggregator eventAggregator,
+            CssThemeManager cssThemeManager,
+            IOptions<ExternalServicesOptions> externalServiceOptions)    
         {
             _Options = options;
             _StoredFileRepository = storedFileRepository;
@@ -78,37 +90,9 @@ namespace BTCPayServer.Controllers
             _torServices = torServices;
             _AppService = appService;
             _sshState = sshState;
-        }
-
-        [Route("server/users")]
-        public IActionResult ListUsers(int skip = 0, int count = 50)
-        {
-            var users = new UsersViewModel();
-            users.Users = _UserManager.Users.Skip(skip).Take(count)
-                .Select(u => new UsersViewModel.UserViewModel
-                {
-                    Name = u.UserName,
-                    Email = u.Email,
-                    Id = u.Id
-                }).ToList();
-            users.Skip = skip;
-            users.Count = count;
-            users.Total = _UserManager.Users.Count();
-            return View(users);
-        }
-
-        [Route("server/users/{userId}")]
-        public new async Task<IActionResult> User(string userId)
-        {
-            var user = await _UserManager.FindByIdAsync(userId);
-            if (user == null)
-                return NotFound();
-            var roles = await _UserManager.GetRolesAsync(user);
-            var userVM = new UserViewModel();
-            userVM.Id = user.Id;
-            userVM.Email = user.Email;
-            userVM.IsAdmin = IsAdmin(roles);
-            return View(userVM);
+            _eventAggregator = eventAggregator;
+            _cssThemeManager = cssThemeManager;
+            _externalServiceOptions = externalServiceOptions;
         }
 
         [Route("server/maintenance")]
@@ -129,6 +113,12 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> Maintenance(MaintenanceViewModel vm, string command)
         {
             vm.CanUseSSH = _sshState.CanUseSSH;
+
+            if (!vm.CanUseSSH)
+            {
+                TempData[WellKnownTempData.ErrorMessage] = "Maintenance feature requires access to SSH properly configured in BTCPayServer configuration.";
+                return View(vm);
+            }
             if (!ModelState.IsValid)
                 return View(vm);
             if (command == "changedomain")
@@ -206,6 +196,13 @@ namespace BTCPayServer.Controllers
                     return error;
                 TempData[WellKnownTempData.SuccessMessage] = $"The old docker images will be cleaned soon...";
             }
+            else if (command == "restart")
+            {
+                var error = await RunSSH(vm, $"btcpay-restart.sh");
+                if (error != null)
+                    return error;
+                TempData[WellKnownTempData.SuccessMessage] = $"BTCPay will restart momentarily.";
+            }
             else
             {
                 return NotFound();
@@ -270,127 +267,7 @@ namespace BTCPayServer.Controllers
                 sshClient.Dispose();
             }
         }
-
-        private static bool IsAdmin(IList<string> roles)
-        {
-            return roles.Contains(Roles.ServerAdmin, StringComparer.Ordinal);
-        }
-
-        [Route("server/users/{userId}")]
-        [HttpPost]
-        public new async Task<IActionResult> User(string userId, UserViewModel viewModel)
-        {
-            var user = await _UserManager.FindByIdAsync(userId);
-            if (user == null)
-                return NotFound();
-
-            var admins = await _UserManager.GetUsersInRoleAsync(Roles.ServerAdmin);
-            var roles = await _UserManager.GetRolesAsync(user);
-            var wasAdmin = IsAdmin(roles);
-            if (!viewModel.IsAdmin && admins.Count == 1 && wasAdmin)
-            {
-                TempData[WellKnownTempData.ErrorMessage] = "This is the only Admin, so their role can't be removed until another Admin is added.";
-                return View(viewModel); // return
-            }
-
-            if (viewModel.IsAdmin != wasAdmin)
-            {
-                if (viewModel.IsAdmin)
-                    await _UserManager.AddToRoleAsync(user, Roles.ServerAdmin);
-                else
-                    await _UserManager.RemoveFromRoleAsync(user, Roles.ServerAdmin);
-
-                TempData[WellKnownTempData.SuccessMessage] = "User successfully updated";
-            }
-
-            return RedirectToAction(nameof(User), new { userId = userId });
-        }
-
-        [Route("server/users/new")]
-        [HttpGet]
-        public IActionResult CreateUser()
-        {
-            ViewData["AllowIsAdmin"] = _Options.AllowAdminRegistration;
-
-            return View();
-        }
-
-        [Route("server/users/new")]
-        [HttpPost]
-        public async Task<IActionResult> CreateUser(RegisterViewModel model)
-        {
-            ViewData["AllowIsAdmin"] = _Options.AllowAdminRegistration;
-
-            if (ModelState.IsValid)
-            {
-                var user = new ApplicationUser { UserName = model.Email, Email = model.Email, RequiresEmailConfirmation = false };
-                var result = await _UserManager.CreateAsync(user, model.Password);
-                if (result.Succeeded)
-                {
-                    TempData[WellKnownTempData.SuccessMessage] = "Account created";
-                    return RedirectToAction(nameof(ListUsers));
-                }
-
-                foreach (var error in result.Errors)
-                {
-                    ModelState.AddModelError(string.Empty, error.Description);
-                }
-            }
-
-            // If we got this far, something failed, redisplay form
-            return View(model);
-        }
-
-        [Route("server/users/{userId}/delete")]
-        public async Task<IActionResult> DeleteUser(string userId)
-        {
-            var user = userId == null ? null : await _UserManager.FindByIdAsync(userId);
-            if (user == null)
-                return NotFound();
-
-            var roles = await _UserManager.GetRolesAsync(user);
-            if (IsAdmin(roles))
-            {
-                var admins = await _UserManager.GetUsersInRoleAsync(Roles.ServerAdmin);
-                if (admins.Count == 1)
-                {
-                    // return
-                    return View("Confirm", new ConfirmModel("Unable to Delete Last Admin",
-                        "This is the last Admin, so it can't be removed"));
-                }
-
-                return View("Confirm", new ConfirmModel("Delete Admin " + user.Email,
-                    "Are you sure you want to delete this Admin and delete all accounts, users and data associated with the server account?",
-                    "Delete"));
-            }
-            else
-            {
-                return View("Confirm", new ConfirmModel("Delete user " + user.Email,
-                                    "This user will be permanently deleted",
-                                    "Delete"));
-            }
-        }
-
-        [Route("server/users/{userId}/delete")]
-        [HttpPost]
-        public async Task<IActionResult> DeleteUserPost(string userId)
-        {
-            var user = userId == null ? null : await _UserManager.FindByIdAsync(userId);
-            if (user == null)
-                return NotFound();
-
-            var files = await _StoredFileRepository.GetFiles(new StoredFileRepository.FilesQuery()
-            {
-                UserIds = new[] { userId },
-            });
-
-            await Task.WhenAll(files.Select(file => _FileService.RemoveFile(file.Id, userId)));
-
-            await _UserManager.DeleteAsync(user);
-            await _StoreRepository.CleanUnreachableStores();
-            TempData[WellKnownTempData.SuccessMessage] = "User deleted";
-            return RedirectToAction(nameof(ListUsers));
-        }
+        
         public IHttpClientFactory HttpClientFactory { get; }
 
         [Route("server/policies")]
@@ -398,13 +275,16 @@ namespace BTCPayServer.Controllers
         {
             var data = (await _SettingsRepository.GetSettingAsync<PoliciesSettings>()) ?? new PoliciesSettings();
             ViewBag.AppsList = await GetAppSelectList();
+            ViewBag.UpdateUrlPresent = _Options.UpdateUrl != null;
             return View(data);
         }
 
         [Route("server/policies")]
         [HttpPost]
-        public async Task<IActionResult> Policies(PoliciesSettings settings, string command = "")
+        public async Task<IActionResult> Policies([FromServices] BTCPayNetworkProvider btcPayNetworkProvider,PoliciesSettings settings, string command = "")
         {
+            
+            ViewBag.UpdateUrlPresent = _Options.UpdateUrl != null;
             ViewBag.AppsList = await GetAppSelectList();
             if (command == "add-domain")
             {
@@ -420,6 +300,8 @@ namespace BTCPayServer.Controllers
                 return View(settings);
             }
 
+            settings.BlockExplorerLinks = settings.BlockExplorerLinks.Where(tuple => btcPayNetworkProvider.GetNetwork(tuple.CryptoCode).BlockExplorerLinkDefault != tuple.Link).ToList();
+        
             if (!ModelState.IsValid)
             {
                 return View(settings);
@@ -451,6 +333,7 @@ namespace BTCPayServer.Controllers
             }
 
             await _SettingsRepository.UpdateSetting(settings);
+            BlockExplorerLinkStartupTask.SetLinkOnNetworks(settings.BlockExplorerLinks, btcPayNetworkProvider);
             TempData[WellKnownTempData.SuccessMessage] = "Policies updated successfully";
             return RedirectToAction(nameof(Policies));
         }
@@ -459,10 +342,10 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> Services()
         {
             var result = new ServicesViewModel();
-            result.ExternalServices = _Options.ExternalServices.ToList();
+            result.ExternalServices = _externalServiceOptions.Value.ExternalServices.ToList();
 
             // other services
-            foreach (var externalService in _Options.OtherExternalServices)
+            foreach (var externalService in _externalServiceOptions.Value.OtherExternalServices)
             {
                 result.OtherExternalServices.Add(new ServicesViewModel.OtherExternalService()
                 {
@@ -555,7 +438,7 @@ namespace BTCPayServer.Controllers
 
         private ExternalService GetService(string serviceName, string cryptoCode)
         {
-            var result = _Options.ExternalServices.GetService(serviceName, cryptoCode);
+            var result = _externalServiceOptions.Value.ExternalServices.GetService(serviceName, cryptoCode);
             if (result != null)
                 return result;
             foreach (var torService in _torServices.Services)
@@ -1088,23 +971,28 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> Emails()
         {
             var data = (await _SettingsRepository.GetSettingAsync<EmailSettings>()) ?? new EmailSettings();
-            return View(new EmailsViewModel() { Settings = data });
+            return View(new EmailsViewModel(data));
         }
 
         [Route("server/emails")]
         [HttpPost]
         public async Task<IActionResult> Emails(EmailsViewModel model, string command)
         {
-            if (!model.Settings.IsComplete())
-            {
-                TempData[WellKnownTempData.ErrorMessage] = "Required fields missing";
-                return View(model);
-            }
-
+           
             if (command == "Test")
             {
                 try
                 {
+                    if (model.PasswordSet)
+                    {
+                        var settings = await _SettingsRepository.GetSettingAsync<EmailSettings>();
+                        model.Settings.Password = settings.Password;
+                    }
+                    if (!model.Settings.IsComplete())
+                    {
+                        TempData[WellKnownTempData.ErrorMessage] = "Required fields missing";
+                        return View(model);
+                    }
                     using (var client = model.Settings.CreateSmtpClient())
                     using (var message = model.Settings.CreateMailMessage(new MailAddress(model.TestEmail), "BTCPay test", "BTCPay test"))
                     {
@@ -1118,11 +1006,24 @@ namespace BTCPayServer.Controllers
                 }
                 return View(model);
             }
+            else if (command == "ResetPassword")
+            {
+                var settings = await _SettingsRepository.GetSettingAsync<EmailSettings>();
+                settings.Password = null;
+                await _SettingsRepository.UpdateSetting(model.Settings);
+                TempData[WellKnownTempData.SuccessMessage] = "Email server password reset";
+                return RedirectToAction(nameof(Emails));
+            }
             else // if(command == "Save")
             {
+                var oldSettings = await _SettingsRepository.GetSettingAsync<EmailSettings>();
+                if (new EmailsViewModel(oldSettings).PasswordSet)
+                {
+                    model.Settings.Password = oldSettings.Password;
+                }
                 await _SettingsRepository.UpdateSetting(model.Settings);
                 TempData[WellKnownTempData.SuccessMessage] = "Email settings saved";
-                return View(model);
+                return RedirectToAction(nameof(Emails));
             }
         }
 

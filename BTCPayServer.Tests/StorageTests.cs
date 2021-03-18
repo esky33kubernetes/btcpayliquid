@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Controllers;
 using BTCPayServer.Models;
 using BTCPayServer.Models.ServerViewModels;
@@ -9,7 +10,6 @@ using BTCPayServer.Storage.Services.Providers.AzureBlobStorage.Configuration;
 using BTCPayServer.Storage.Services.Providers.FileSystemStorage.Configuration;
 using BTCPayServer.Storage.ViewModels;
 using BTCPayServer.Tests.Logging;
-using DBriize.Utils;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Xunit;
@@ -211,10 +211,9 @@ namespace BTCPayServer.Tests
             Assert.NotNull(statusMessageModel);
             Assert.Equal(StatusMessageModel.StatusSeverity.Success, statusMessageModel.Severity);
             var index = statusMessageModel.Html.IndexOf("target='_blank'>");
-            var url = statusMessageModel.Html.Substring(index).ReplaceMultiple(new Dictionary<string, string>()
-            {
-                {"</a>", string.Empty}, {"target='_blank'>", string.Empty}
-            });
+            var url = statusMessageModel.Html.Substring(index)
+                .Replace("</a>", string.Empty)
+                .Replace("target='_blank'>", string.Empty);
             //verify tmpfile is available and the same
             data = await net.DownloadStringTaskAsync(new Uri(url));
             Assert.Equal(fileContent, data);
@@ -222,7 +221,7 @@ namespace BTCPayServer.Tests
 
             //delete file
             Assert.IsType<RedirectToActionResult>(await controller.DeleteFile(fileId));
-            controller.TempData.GetStatusMessageModel();
+            statusMessageModel = controller.TempData.GetStatusMessageModel();
             Assert.NotNull(statusMessageModel);
 
             Assert.Equal(StatusMessageModel.StatusSeverity.Success, statusMessageModel.Severity);

@@ -47,7 +47,8 @@ namespace BTCPayServer.Models.WalletViewModels
         [Display(Name = "Don't create UTXO change")]
         public bool NoChange { get; set; }
         public decimal? Rate { get; set; }
-        public int Divisibility { get; set; }
+        public int FiatDivisibility { get; set; }
+        public int CryptoDivisibility { get; set; }
         public string Fiat { get; set; }
         public string RateError { get; set; }
         public bool SupportRBF { get; set; }
@@ -67,7 +68,7 @@ namespace BTCPayServer.Models.WalletViewModels
 
         public class InputSelectionOption
         {
-            public IEnumerable<Label> Labels { get; set; }
+            public IEnumerable<ColoredLabel> Labels { get; set; }
             public string Comment { get; set; }
             public decimal Amount { get; set; }
             public string Outpoint { get; set; }

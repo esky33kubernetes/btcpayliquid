@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services.Invoices;
@@ -73,24 +74,17 @@ namespace BTCPayServer.Models.InvoicingModels
         {
             get; set;
         }
-
-        public string OrderId
-        {
-            get; set;
-        }
         public string RefundEmail
         {
             get;
             set;
         }
+
+        public List<StoreViewModels.DeliveryViewModel> Deliveries { get; set; } = new List<StoreViewModels.DeliveryViewModel>();
         public string TaxIncluded { get; set; }
-        public BuyerInformation BuyerInformation
-        {
-            get;
-            set;
-        }
 
         public string TransactionSpeed { get; set; }
+        public string StoreId { get; set; }
         public object StoreName
         {
             get;
@@ -113,11 +107,7 @@ namespace BTCPayServer.Models.InvoicingModels
             get;
             set;
         }
-        public ProductInformation ProductInformation
-        {
-            get;
-            internal set;
-        }
+        public InvoiceMetadata TypedMetadata { get; set; }
         public AddressModel[] Addresses { get; set; }
         public DateTimeOffset MonitoringDate { get; internal set; }
         public List<Data.InvoiceEventData> Events { get; internal set; }

@@ -1,6 +1,9 @@
 using System;
 using System.Globalization;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Data;
 using BTCPayServer.Events;
 using BTCPayServer.Logging;
@@ -8,8 +11,6 @@ using BTCPayServer.Models;
 using BTCPayServer.Models.AccountViewModels;
 using BTCPayServer.Security;
 using BTCPayServer.Services;
-using BTCPayServer.Services.Mails;
-using BTCPayServer.Services.Stores;
 using BTCPayServer.U2F;
 using BTCPayServer.U2F.Models;
 using Microsoft.AspNetCore.Authentication;
@@ -28,8 +29,6 @@ namespace BTCPayServer.Controllers
     {
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly SignInManager<ApplicationUser> _signInManager;
-        private readonly EmailSenderFactory _EmailSenderFactory;
-        readonly StoreRepository storeRepository;
         readonly RoleManager<IdentityRole> _RoleManager;
         readonly SettingsRepository _SettingsRepository;
         readonly Configuration.BTCPayServerOptions _Options;
@@ -41,19 +40,15 @@ namespace BTCPayServer.Controllers
         public AccountController(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
-            StoreRepository storeRepository,
             SignInManager<ApplicationUser> signInManager,
-            EmailSenderFactory emailSenderFactory,
             SettingsRepository settingsRepository,
             Configuration.BTCPayServerOptions options,
             BTCPayServerEnvironment btcPayServerEnvironment,
             U2FService u2FService,
             EventAggregator eventAggregator)
         {
-            this.storeRepository = storeRepository;
             _userManager = userManager;
             _signInManager = signInManager;
-            _EmailSenderFactory = emailSenderFactory;
             _RoleManager = roleManager;
             _SettingsRepository = settingsRepository;
             _Options = options;
@@ -71,7 +66,9 @@ namespace BTCPayServer.Controllers
 
         [HttpGet]
         [AllowAnonymous]
-        public async Task<IActionResult> Login(string returnUrl = null)
+        [Route("~/login", Order = 1)]
+        [Route("~/Account/Login", Order = 2)]
+        public async Task<IActionResult> Login(string returnUrl = null, string email = null)
         {
 
             if (User.Identity.IsAuthenticated && string.IsNullOrEmpty(returnUrl))
@@ -85,12 +82,17 @@ namespace BTCPayServer.Controllers
             }
 
             ViewData["ReturnUrl"] = returnUrl;
-            return View();
+            return View(new LoginViewModel()
+            {
+                Email = email
+            });
         }
 
 
         [HttpPost]
         [AllowAnonymous]
+        [Route("~/login", Order = 1)]
+        [Route("~/Account/Login", Order = 2)]
         [ValidateAntiForgeryToken]
         [RateLimitsFilter(ZoneLimits.Login, Scope = RateLimitsScope.RemoteAddress)]
         public async Task<IActionResult> Login(LoginViewModel model, string returnUrl = null)
@@ -398,6 +400,8 @@ namespace BTCPayServer.Controllers
 
         [HttpGet]
         [AllowAnonymous]
+        [Route("~/register", Order = 1)]
+        [Route("~/Account/Register", Order = 2)]
         [RateLimitsFilter(ZoneLimits.Register, Scope = RateLimitsScope.RemoteAddress)]
         public async Task<IActionResult> Register(string returnUrl = null, bool logon = true)
         {
@@ -415,6 +419,8 @@ namespace BTCPayServer.Controllers
 
         [HttpPost]
         [AllowAnonymous]
+        [Route("~/register", Order = 1)]
+        [Route("~/Account/Register", Order = 2)]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> Register(RegisterViewModel model, string returnUrl = null, bool logon = true)
         {
@@ -431,7 +437,8 @@ namespace BTCPayServer.Controllers
                 return RedirectToAction(nameof(HomeController.Index), "Home");
             if (ModelState.IsValid)
             {
-                var user = new ApplicationUser { UserName = model.Email, Email = model.Email, RequiresEmailConfirmation = policies.RequiresConfirmedEmail };
+                var user = new ApplicationUser { UserName = model.Email, Email = model.Email, RequiresEmailConfirmation = policies.RequiresConfirmedEmail, 
+                    Created = DateTimeOffset.UtcNow };
                 var result = await _userManager.CreateAsync(user, model.Password);
                 if (result.Succeeded)
                 {
@@ -500,8 +507,30 @@ namespace BTCPayServer.Controllers
             {
                 throw new ApplicationException($"Unable to load user with ID '{userId}'.");
             }
+           
             var result = await _userManager.ConfirmEmailAsync(user, code);
-            return View(result.Succeeded ? "ConfirmEmail" : "Error");
+            if (!await _userManager.HasPasswordAsync(user))
+            {
+                
+                TempData.SetStatusMessageModel(new StatusMessageModel()
+                {
+                    Severity = StatusMessageModel.StatusSeverity.Info,
+                    Message = "Your email has been confirmed but you still need to set your password."
+                });
+                return RedirectToAction("SetPassword", new { email = user.Email, code= await _userManager.GeneratePasswordResetTokenAsync(user)});
+            }
+
+            if (result.Succeeded)
+            {
+                TempData.SetStatusMessageModel(new StatusMessageModel()
+                {
+                    Severity = StatusMessageModel.StatusSeverity.Success,
+                    Message = "Your email has been confirmed."
+                });
+                return RedirectToAction("Login", new {email = user.Email});
+            }
+
+            return View("Error");
         }
 
         [HttpGet]
@@ -519,19 +548,15 @@ namespace BTCPayServer.Controllers
             if (ModelState.IsValid)
             {
                 var user = await _userManager.FindByEmailAsync(model.Email);
-                if (user == null || !(await _userManager.IsEmailConfirmedAsync(user)))
+                if (user == null || (user.RequiresEmailConfirmation && !(await _userManager.IsEmailConfirmedAsync(user))))
                 {
                     // Don't reveal that the user does not exist or is not confirmed
                     return RedirectToAction(nameof(ForgotPasswordConfirmation));
                 }
-
-                // For more information on how to enable account confirmation and password reset please
-                // visit https://go.microsoft.com/fwlink/?LinkID=532713
-                var code = await _userManager.GeneratePasswordResetTokenAsync(user);
-                var callbackUrl = Url.ResetPasswordCallbackLink(user.Id, code, Request.Scheme);
-                _EmailSenderFactory.GetEmailSender().SendEmail(model.Email, "Reset Password",
-                    $"Please reset your password by clicking here: <a href='{callbackUrl}'>link</a>");
-
+                _eventAggregator.Publish(new UserPasswordResetRequestedEvent()
+                {
+                    User = user, RequestUri = Request.GetAbsoluteRootUri()
+                });
                 return RedirectToAction(nameof(ForgotPasswordConfirmation));
             }
 
@@ -548,20 +573,27 @@ namespace BTCPayServer.Controllers
 
         [HttpGet]
         [AllowAnonymous]
-        public IActionResult ResetPassword(string code = null)
+        public async Task<IActionResult> SetPassword(string code = null, string userId = null, string email = null)
         {
             if (code == null)
             {
                 throw new ApplicationException("A code must be supplied for password reset.");
             }
-            var model = new ResetPasswordViewModel { Code = code };
+
+            if (!string.IsNullOrEmpty(userId))
+            {
+                var user = await _userManager.FindByIdAsync(userId);
+                email = user?.Email;
+            }
+
+            var model = new SetPasswordViewModel {Code = code, Email = email, EmailSetInternally = !string.IsNullOrEmpty(email)};
             return View(model);
         }
 
         [HttpPost]
         [AllowAnonymous]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> ResetPassword(ResetPasswordViewModel model)
+        public async Task<IActionResult> SetPassword(SetPasswordViewModel model)
         {
             if (!ModelState.IsValid)
             {
@@ -571,24 +603,22 @@ namespace BTCPayServer.Controllers
             if (user == null)
             {
                 // Don't reveal that the user does not exist
-                return RedirectToAction(nameof(ResetPasswordConfirmation));
+                return RedirectToAction(nameof(Login));
             }
+
             var result = await _userManager.ResetPasswordAsync(user, model.Code, model.Password);
             if (result.Succeeded)
             {
-                return RedirectToAction(nameof(ResetPasswordConfirmation));
+                TempData.SetStatusMessageModel(new StatusMessageModel()
+                {
+                    Severity = StatusMessageModel.StatusSeverity.Success, Message = "Password successfully set."
+                });
+                return RedirectToAction(nameof(Login));
             }
+
             AddErrors(result);
-            return View();
+            return View(model);
         }
-
-        [HttpGet]
-        [AllowAnonymous]
-        public IActionResult ResetPasswordConfirmation()
-        {
-            return View();
-        }
-
 
         [HttpGet]
         public IActionResult AccessDenied()

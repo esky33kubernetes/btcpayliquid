@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Configuration;
@@ -9,6 +10,7 @@ using BTCPayServer.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace BTCPayServer.Controllers.GreenField
 {
@@ -18,19 +20,21 @@ namespace BTCPayServer.Controllers.GreenField
     [EnableCors(CorsPolicies.All)]
     public class InternalLightningNodeApiController : LightningNodeApiController
     {
-        private readonly BTCPayServerOptions _btcPayServerOptions;
         private readonly BTCPayNetworkProvider _btcPayNetworkProvider;
         private readonly LightningClientFactoryService _lightningClientFactory;
+        private readonly IOptions<LightningNetworkOptions> _lightningNetworkOptions;
 
 
-        public InternalLightningNodeApiController(BTCPayServerOptions btcPayServerOptions,
+        public InternalLightningNodeApiController(
             BTCPayNetworkProvider btcPayNetworkProvider, BTCPayServerEnvironment btcPayServerEnvironment,
-            CssThemeManager cssThemeManager, LightningClientFactoryService lightningClientFactory) : base(
-            btcPayNetworkProvider, btcPayServerEnvironment, cssThemeManager)
+            CssThemeManager cssThemeManager, LightningClientFactoryService lightningClientFactory,  
+            IOptions<LightningNetworkOptions> lightningNetworkOptions,
+            IAuthorizationService authorizationService) : base(
+            btcPayNetworkProvider, btcPayServerEnvironment, cssThemeManager, authorizationService)
         {
-            _btcPayServerOptions = btcPayServerOptions;
             _btcPayNetworkProvider = btcPayNetworkProvider;
             _lightningClientFactory = lightningClientFactory;
+            _lightningNetworkOptions = lightningNetworkOptions;
         }
 
         [Authorize(Policy = Policies.CanUseInternalLightningNode,
@@ -97,17 +101,17 @@ namespace BTCPayServer.Controllers.GreenField
             return base.CreateInvoice(cryptoCode, request);
         }
 
-        protected override Task<ILightningClient> GetLightningClient(string cryptoCode, bool doingAdminThings)
+        protected override async Task<ILightningClient> GetLightningClient(string cryptoCode, bool doingAdminThings)
         {
-            _btcPayServerOptions.InternalLightningByCryptoCode.TryGetValue(cryptoCode,
-                out var internalLightningNode);
             var network = _btcPayNetworkProvider.GetNetwork<BTCPayNetwork>(cryptoCode);
-            if (network == null || !CanUseInternalLightning(doingAdminThings) || internalLightningNode == null)
+            if (network == null ||
+                !_lightningNetworkOptions.Value.InternalLightningByCryptoCode.TryGetValue(network.CryptoCode,
+                out var internalLightningNode) ||
+                !await CanUseInternalLightning(doingAdminThings))
             {
                 return null;
             }
-
-            return Task.FromResult(_lightningClientFactory.Create(internalLightningNode, network));
+            return _lightningClientFactory.Create(internalLightningNode, network);
         }
     }
 }

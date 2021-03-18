@@ -73,12 +73,12 @@ namespace BTCPayServer.Services.Altcoins.Monero.Payments
             public Func<string, Task<CreateAddressResponse>> ReserveAddress;
         }
 
-        public override void PreparePaymentModel(PaymentModel model, InvoiceResponse invoiceResponse, StoreBlob storeBlob)
+        public override void PreparePaymentModel(PaymentModel model, InvoiceResponse invoiceResponse,
+            StoreBlob storeBlob, IPaymentMethod paymentMethod)
         {
-            var paymentMethodId = new PaymentMethodId(model.CryptoCode, PaymentType);
+            var paymentMethodId = paymentMethod.GetId();
             var cryptoInfo = invoiceResponse.CryptoInfo.First(o => o.GetpaymentMethodId() == paymentMethodId);
             var network = _networkProvider.GetNetwork<MoneroLikeSpecificBtcPayNetwork>(model.CryptoCode);
-            model.IsLightning = false;
             model.PaymentMethodName = GetPaymentMethodName(network);
             model.CryptoImage = GetCryptoImage(network);
             model.InvoiceBitcoinUrl = MoneroPaymentType.Instance.GetPaymentLink(network, new MoneroLikeOnChainPaymentMethodDetails()
@@ -98,13 +98,6 @@ namespace BTCPayServer.Services.Altcoins.Monero.Payments
             var network = _networkProvider.GetNetwork<MoneroLikeSpecificBtcPayNetwork>(paymentMethodId.CryptoCode);
             return GetPaymentMethodName(network);
         }
-
-        public override Task<string> IsPaymentMethodAllowedBasedOnInvoiceAmount(StoreBlob storeBlob, Dictionary<CurrencyPair, Task<RateResult>> rate, Money amount,
-            PaymentMethodId paymentMethodId)
-        {
-            return Task.FromResult<string>(null);
-        }
-
         public override IEnumerable<PaymentMethodId> GetSupportedPaymentMethods()
         {
             return _networkProvider.GetAll()

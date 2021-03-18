@@ -18,8 +18,15 @@ namespace BTCPayServer
                 throw new ArgumentNullException(nameof(network));
             if (derivationStrategy == null)
                 throw new ArgumentNullException(nameof(derivationStrategy));
-            var result = network.NBXplorerNetwork.DerivationStrategyFactory.Parse(derivationStrategy);
-            return new DerivationSchemeSettings(result, network) { AccountOriginal = derivationStrategy.Trim() };
+            var result = new DerivationSchemeSettings();
+            result.Network = network;
+            var parser = new DerivationSchemeParser(network);
+            if (TryParseXpub(derivationStrategy, parser, ref result, false) || TryParseXpub(derivationStrategy, parser, ref result, true))
+            {
+                return result;
+            }
+
+            throw new FormatException("Invalid Derivation Scheme");
         }
 
         public static bool TryParseFromJson(string config, BTCPayNetwork network, out DerivationSchemeSettings strategy)
@@ -40,13 +47,35 @@ namespace BTCPayServer
 
         private static bool TryParseXpub(string xpub, DerivationSchemeParser derivationSchemeParser, ref DerivationSchemeSettings derivationSchemeSettings, bool electrum = true)
         {
+            if (!electrum)
+            {
+                try
+                {
+                    var result = derivationSchemeParser.ParseOutputDescriptor(xpub);
+                    derivationSchemeSettings.AccountOriginal = xpub.Trim();
+                    derivationSchemeSettings.AccountDerivation = result.Item1;
+                    derivationSchemeSettings.AccountKeySettings = result.Item2.Select((path, i) => new AccountKeySettings()
+                    {
+                        RootFingerprint = path?.MasterFingerprint,
+                        AccountKeyPath = path?.KeyPath,
+                        AccountKey = result.Item1.GetExtPubKeys().ElementAt(i).GetWif(derivationSchemeParser.Network)
+                    }).ToArray();
+                    return true;
+                }
+                catch (Exception)
+                {
+                    // ignored
+                }
+            }
             try
             {
                 derivationSchemeSettings.AccountOriginal = xpub.Trim();
                 derivationSchemeSettings.AccountDerivation = electrum ? derivationSchemeParser.ParseElectrum(derivationSchemeSettings.AccountOriginal) : derivationSchemeParser.Parse(derivationSchemeSettings.AccountOriginal);
-                derivationSchemeSettings.AccountKeySettings = new AccountKeySettings[1];
-                derivationSchemeSettings.AccountKeySettings[0] = new AccountKeySettings();
-                derivationSchemeSettings.AccountKeySettings[0].AccountKey = derivationSchemeSettings.AccountDerivation.GetExtPubKeys().Single().GetWif(derivationSchemeParser.Network);
+                derivationSchemeSettings.AccountKeySettings = derivationSchemeSettings.AccountDerivation.GetExtPubKeys()
+                    .Select(key => new AccountKeySettings()
+                    {
+                        AccountKey = key.GetWif(derivationSchemeParser.Network)
+                    }).ToArray();
                 if (derivationSchemeSettings.AccountDerivation is DirectDerivationStrategy direct && !direct.Segwit)
                     derivationSchemeSettings.AccountOriginal = null; // Saving this would be confusing for user, as xpub of electrum is legacy derivation, but for btcpay, it is segwit derivation
                 return true;
@@ -74,10 +103,18 @@ namespace BTCPayServer
             catch
             {
                 result.Source = "GenericFile";
-                return TryParseXpub(fileContents, derivationSchemeParser, ref result);
+                if (TryParseXpub(fileContents, derivationSchemeParser, ref result) ||
+                    TryParseXpub(fileContents, derivationSchemeParser, ref result, false))
+                {
+                    settings = result;
+                    settings.Network = network;
+                    return true;
+                }
+
+                return false;
             }
 
-            //electrum
+            // Electrum
             if (jobj.ContainsKey("keystore"))
             {
                 result.Source = "ElectrumFile";
@@ -116,10 +153,29 @@ namespace BTCPayServer
                     catch { return false; }
                 }
             }
+            // Specter
+            else if (jobj.ContainsKey("descriptor") && jobj.ContainsKey("blockheight"))
+            {
+                result.Source = "SpecterFile";
+
+                if (!TryParseXpub(jobj["descriptor"].Value<string>(), derivationSchemeParser, ref result, false))
+                {
+                    return false;
+                }
+
+                if (jobj.ContainsKey("label"))
+                {
+                    try
+                    {
+                        result.Label = jobj["label"].Value<string>();
+                    }
+                    catch { return false; }
+                }
+            }
+            // Wasabi
             else
             {
                 result.Source = "WasabiFile";
-                //wasabi format 
                 if (!jobj.ContainsKey("ExtPubKey") ||
                     !TryParseXpub(jobj["ExtPubKey"].Value<string>(), derivationSchemeParser, ref result, false))
                 {
@@ -218,23 +274,23 @@ namespace BTCPayServer
         [JsonIgnore]
         public bool IsHotWallet => Source == "NBXplorer";
 
-        [Obsolete("Use GetAccountKeySettings().AccountKeyPath instead")]
+        [Obsolete("Use GetSigningAccountKeySettings().AccountKeyPath instead")]
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public KeyPath AccountKeyPath { get; set; }
 
         public DerivationStrategyBase AccountDerivation { get; set; }
         public string AccountOriginal { get; set; }
 
-        [Obsolete("Use GetAccountKeySettings().RootFingerprint instead")]
+        [Obsolete("Use GetSigningAccountKeySettings().RootFingerprint instead")]
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public HDFingerprint? RootFingerprint { get; set; }
 
-        [Obsolete("Use GetAccountKeySettings().AccountKey instead")]
+        [Obsolete("Use GetSigningAccountKeySettings().AccountKey instead")]
         [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
         public BitcoinExtPubKey ExplicitAccountKey { get; set; }
 
         [JsonIgnore]
-        [Obsolete("Use GetAccountKeySettings().AccountKey instead")]
+        [Obsolete("Use GetSigningAccountKeySettings().AccountKey instead")]
         public BitcoinExtPubKey AccountKey
         {
             get

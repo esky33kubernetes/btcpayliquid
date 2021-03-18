@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
@@ -9,14 +10,15 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
 using BTCPayServer.Lightning;
+using BTCPayServer.Logging;
 using BTCPayServer.Models;
 using BTCPayServer.Models.StoreViewModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Bitcoin;
-using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Wallets;
 using Microsoft.AspNetCore.Http;
@@ -24,12 +26,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NBitcoin;
+using BTCPayServer.BIP78.Sender;
 using NBitcoin.Payment;
 using NBitpayClient;
 using NBXplorer.DerivationStrategy;
 using NBXplorer.Models;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer
@@ -42,13 +45,20 @@ namespace BTCPayServer
             endpoint = bip21.UnknowParameters.TryGetValue($"{PayjoinClient.BIP21EndpointKey}", out var uri) ? new Uri(uri, UriKind.Absolute) : null;
             return endpoint != null;
         }
-        public static bool IsInternalNode(this LightningConnectionString connectionString, LightningConnectionString internalLightning)
-        {
-            var internalDomain = internalLightning?.BaseUri?.DnsSafeHost;
 
-            return connectionString.ConnectionType == LightningConnectionType.CLightning ||
-                                  connectionString.BaseUri.DnsSafeHost == internalDomain ||
-                                  (internalDomain == "127.0.0.1" || internalDomain == "localhost");
+        public static bool IsSafe(this LightningConnectionString connectionString)
+        {
+            if (connectionString.CookieFilePath != null ||
+                connectionString.MacaroonDirectoryPath != null ||
+                connectionString.MacaroonFilePath != null)
+                return false;
+
+            var uri = connectionString.BaseUri;
+            if (uri.Scheme.Equals("unix", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!NBitcoin.Utils.TryParseEndpoint(uri.DnsSafeHost, 80, out var endpoint))
+                return false;
+            return !Extensions.IsLocalNetwork(uri.DnsSafeHost);
         }
 
         public static IQueryable<TEntity> Where<TEntity>(this Microsoft.EntityFrameworkCore.DbSet<TEntity> obj, System.Linq.Expressions.Expression<Func<TEntity, bool>> predicate) where TEntity : class
@@ -137,7 +147,8 @@ namespace BTCPayServer
             var result = await explorerClientProvider.GetExplorerClient(psbt.Network.NetworkSet.CryptoCode).UpdatePSBTAsync(new UpdatePSBTRequest()
             {
                 PSBT = psbt,
-                DerivationScheme = derivationSchemeSettings.AccountDerivation
+                DerivationScheme = derivationSchemeSettings.AccountDerivation,
+                AlwaysIncludeNonWitnessUTXO = true
             });
             if (result == null)
                 return null;
@@ -223,15 +234,7 @@ namespace BTCPayServer
             return false;
         }
 
-        public static void SetStatusMessageModel(this ITempDataDictionary tempData, StatusMessageModel statusMessage)
-        {
-            if (statusMessage == null)
-            {
-                tempData.Remove("StatusMessageModel");
-                return;
-            }
-            tempData["StatusMessageModel"] = JObject.FromObject(statusMessage).ToString(Formatting.None);
-        }
+        
 
         public static StatusMessageModel GetStatusMessageModel(this ITempDataDictionary tempData)
         {
@@ -304,6 +307,10 @@ namespace BTCPayServer
                         request.PathBase.ToUriComponent(),
                         request.Path.ToUriComponent());
         }
+        public static string GetCurrentPathWithQueryString(this HttpRequest request)
+        {
+            return request.PathBase + request.Path + request.QueryString;
+        }
 
         /// <summary>
         /// If 'toto' and RootPath is 'rootpath' returns '/rootpath/toto'
@@ -373,15 +380,6 @@ namespace BTCPayServer
                     request.Scheme,
                     "://",
                     request.Host.ToUriComponent()) + relativeOrAbsolute.ToString().WithStartingSlash(), UriKind.Absolute);
-        }
-
-        public static IServiceCollection ConfigureBTCPayServer(this IServiceCollection services, IConfiguration conf)
-        {
-            services.Configure<BTCPayServerOptions>(o =>
-            {
-                o.LoadArgs(conf);
-            });
-            return services;
         }
 
         public static string GetSIN(this ClaimsPrincipal principal)
@@ -466,6 +464,48 @@ namespace BTCPayServer
             string sql = command.CommandText;
             return sql;
         }
+
+        public static BTCPayNetworkProvider ConfigureNetworkProvider(this IConfiguration configuration)
+        {
+            var _networkType = DefaultConfiguration.GetNetworkType(configuration);
+            var supportedChains = configuration.GetOrDefault<string>("chains", "btc")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.ToUpperInvariant()).ToHashSet();
+
+            var networkProvider = new BTCPayNetworkProvider(_networkType);
+            var filtered = networkProvider.Filter(supportedChains.ToArray());
+#if ALTCOINS
+            supportedChains.AddRange(filtered.GetAllElementsSubChains(networkProvider));
+            supportedChains.AddRange(filtered.GetAllEthereumSubChains(networkProvider));
+#endif
+#if !ALTCOINS
+            var onlyBTC = supportedChains.Count == 1 && supportedChains.First() == "BTC";
+            if (!onlyBTC)
+                throw new ConfigException($"This build of BTCPay Server does not support altcoins");
+#endif
+            var result = networkProvider.Filter(supportedChains.ToArray());
+            foreach (var chain in supportedChains)
+            {
+                if (result.GetNetwork<BTCPayNetworkBase>(chain) == null)
+                    throw new ConfigException($"Invalid chains \"{chain}\"");
+            }
+
+            Logs.Configuration.LogInformation(
+                "Supported chains: " + String.Join(',', supportedChains.ToArray()));
+            return result;
+        }
+
+        public static DataDirectories Configure(this DataDirectories dataDirectories, IConfiguration configuration)
+        {
+            var networkType = DefaultConfiguration.GetNetworkType(configuration);
+            var defaultSettings = BTCPayDefaultSettings.GetDefaultSettings(networkType);
+            dataDirectories.DataDir = configuration["datadir"] ?? defaultSettings.DefaultDataDirectory;
+            dataDirectories.PluginDir = configuration["plugindir"] ?? defaultSettings.DefaultPluginDirectory;
+            dataDirectories.StorageDir = Path.Combine(dataDirectories.DataDir , Storage.Services.Providers.FileSystemStorage.FileSystemFileProviderService.LocalStorageDirectoryName);
+            dataDirectories.TempStorageDir = Path.Combine(dataDirectories.StorageDir, "tmp");
+            return dataDirectories;
+        }
+
         private static object Private(this object obj, string privateField) => obj?.GetType().GetField(privateField, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(obj);
         private static T Private<T>(this object obj, string privateField) => (T)obj?.GetType().GetField(privateField, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(obj);
     }

@@ -5,6 +5,9 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
@@ -12,7 +15,6 @@ using BTCPayServer.HostedServices;
 using BTCPayServer.Models;
 using BTCPayServer.Models.StoreViewModels;
 using BTCPayServer.Payments;
-using BTCPayServer.Payments.Changelly;
 using BTCPayServer.Payments.Lightning;
 using BTCPayServer.Rating;
 using BTCPayServer.Security;
@@ -21,16 +23,20 @@ using BTCPayServer.Services;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Rates;
+using BTCPayServer.Services.Shopify;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
+using BundlerMinifier.TagHelpers;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using NBXplorer;
+using NBXplorer.DerivationStrategy;
 using StoreData = BTCPayServer.Data.StoreData;
 
 namespace BTCPayServer.Controllers
@@ -55,36 +61,35 @@ namespace BTCPayServer.Controllers
             BTCPayNetworkProvider networkProvider,
             RateFetcher rateFactory,
             ExplorerClientProvider explorerProvider,
-            IFeeProviderFactory feeRateProvider,
             LanguageService langService,
-            ChangellyClientProvider changellyClientProvider,
-            IWebHostEnvironment env, IHttpClientFactory httpClientFactory,
             PaymentMethodHandlerDictionary paymentMethodHandlerDictionary,
             SettingsRepository settingsRepository,
             IAuthorizationService authorizationService,
             EventAggregator eventAggregator,
             CssThemeManager cssThemeManager,
-            AppService appService)
+            AppService appService,
+            IWebHostEnvironment webHostEnvironment,
+            WebhookNotificationManager webhookNotificationManager,
+            IOptions<LightningNetworkOptions> lightningNetworkOptions)
         {
             _RateFactory = rateFactory;
             _Repo = repo;
             _TokenRepository = tokenRepo;
             _UserManager = userManager;
             _LangService = langService;
-            _changellyClientProvider = changellyClientProvider;
             _TokenController = tokenController;
             _WalletProvider = walletProvider;
-            _Env = env;
-            _httpClientFactory = httpClientFactory;
             _paymentMethodHandlerDictionary = paymentMethodHandlerDictionary;
             _settingsRepository = settingsRepository;
             _authorizationService = authorizationService;
             _CssThemeManager = cssThemeManager;
             _appService = appService;
+            _webHostEnvironment = webHostEnvironment;
+            _lightningNetworkOptions = lightningNetworkOptions;
+            WebhookNotificationManager = webhookNotificationManager;
             _EventAggregator = eventAggregator;
             _NetworkProvider = networkProvider;
             _ExplorerProvider = explorerProvider;
-            _FeeRateProvider = feeRateProvider;
             _ServiceProvider = serviceProvider;
             _BtcpayServerOptions = btcpayServerOptions;
             _BTCPayEnv = btcpayEnv;
@@ -95,21 +100,19 @@ namespace BTCPayServer.Controllers
         readonly IServiceProvider _ServiceProvider;
         readonly BTCPayNetworkProvider _NetworkProvider;
         private readonly ExplorerClientProvider _ExplorerProvider;
-        private readonly IFeeProviderFactory _FeeRateProvider;
         readonly BTCPayWalletProvider _WalletProvider;
         readonly AccessTokenController _TokenController;
         readonly StoreRepository _Repo;
         readonly TokenRepository _TokenRepository;
         readonly UserManager<ApplicationUser> _UserManager;
         private readonly LanguageService _LangService;
-        private readonly ChangellyClientProvider _changellyClientProvider;
-        readonly IWebHostEnvironment _Env;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly PaymentMethodHandlerDictionary _paymentMethodHandlerDictionary;
         private readonly SettingsRepository _settingsRepository;
         private readonly IAuthorizationService _authorizationService;
         private readonly CssThemeManager _CssThemeManager;
         private readonly AppService _appService;
+        private readonly IWebHostEnvironment _webHostEnvironment;
+        private readonly IOptions<LightningNetworkOptions> _lightningNetworkOptions;
         private readonly EventAggregator _EventAggregator;
 
         [TempData]
@@ -374,52 +377,68 @@ namespace BTCPayServer.Controllers
             var storeBlob = CurrentStore.GetStoreBlob();
             var vm = new CheckoutExperienceViewModel();
             SetCryptoCurrencies(vm, CurrentStore);
+            vm.PaymentMethodCriteria = CurrentStore.GetSupportedPaymentMethods(_NetworkProvider).Select(method =>
+            {
+                var existing =
+                    storeBlob.PaymentMethodCriteria.SingleOrDefault(criteria =>
+                        criteria.PaymentMethod == method.PaymentId);
+                if (existing is null)
+                {
+                    return new PaymentMethodCriteriaViewModel()
+                    {
+                        PaymentMethod = method.PaymentId.ToString(),
+                        Value = ""
+                    };
+                }
+                else
+                {
+                    return new PaymentMethodCriteriaViewModel()
+                    {
+                        PaymentMethod = existing.PaymentMethod.ToString(),
+                        Type = existing.Above
+                            ? PaymentMethodCriteriaViewModel.CriteriaType.GreaterThan
+                            : PaymentMethodCriteriaViewModel.CriteriaType.LessThan,
+                        Value = existing.Value?.ToString() ?? ""
+                    };
+                }
+            }).ToList();
+            vm.RequiresRefundEmail = storeBlob.RequiresRefundEmail;
+            vm.LightningAmountInSatoshi = storeBlob.LightningAmountInSatoshi;
+            vm.LightningPrivateRouteHints = storeBlob.LightningPrivateRouteHints;
+            vm.OnChainWithLnInvoiceFallback = storeBlob.OnChainWithLnInvoiceFallback;
+            vm.RedirectAutomatically = storeBlob.RedirectAutomatically;
+            vm.ShowRecommendedFee = storeBlob.ShowRecommendedFee;
+            vm.RecommendedFeeBlockTarget = storeBlob.RecommendedFeeBlockTarget;
+
             vm.CustomCSS = storeBlob.CustomCSS;
             vm.CustomLogo = storeBlob.CustomLogo;
             vm.HtmlTitle = storeBlob.HtmlTitle;
             vm.SetLanguages(_LangService, storeBlob.DefaultLang);
-            vm.RequiresRefundEmail = storeBlob.RequiresRefundEmail;
-            vm.ShowRecommendedFee = storeBlob.ShowRecommendedFee;
-            vm.RecommendedFeeBlockTarget = storeBlob.RecommendedFeeBlockTarget;
-            vm.OnChainMinValue = storeBlob.OnChainMinValue?.ToString() ?? "";
-            vm.LightningMaxValue = storeBlob.LightningMaxValue?.ToString() ?? "";
-            vm.LightningAmountInSatoshi = storeBlob.LightningAmountInSatoshi;
-            vm.LightningPrivateRouteHints = storeBlob.LightningPrivateRouteHints;
-            vm.RedirectAutomatically = storeBlob.RedirectAutomatically;
             return View(vm);
         }
+
         void SetCryptoCurrencies(CheckoutExperienceViewModel vm, Data.StoreData storeData)
         {
             var choices = storeData.GetEnabledPaymentIds(_NetworkProvider)
-                                      .Select(o => new CheckoutExperienceViewModel.Format() { Name = o.ToPrettyString(), Value = o.ToString(), PaymentId = o }).ToArray();
+                .Select(o =>
+                    new CheckoutExperienceViewModel.Format()
+                    {
+                        Name = o.ToPrettyString(),
+                        Value = o.ToString(),
+                        PaymentId = o
+                    }).ToArray();
 
             var defaultPaymentId = storeData.GetDefaultPaymentId(_NetworkProvider);
             var chosen = choices.FirstOrDefault(c => c.PaymentId == defaultPaymentId);
-            vm.CryptoCurrencies = new SelectList(choices, nameof(chosen.Value), nameof(chosen.Name), chosen?.Value);
+            vm.PaymentMethods = new SelectList(choices, nameof(chosen.Value), nameof(chosen.Name), chosen?.Value);
             vm.DefaultPaymentMethod = chosen?.Value;
         }
+
 
         [HttpPost]
         [Route("{storeId}/checkout")]
         public async Task<IActionResult> CheckoutExperience(CheckoutExperienceViewModel model)
         {
-            CurrencyValue lightningMaxValue = null;
-            if (!string.IsNullOrWhiteSpace(model.LightningMaxValue))
-            {
-                if (!CurrencyValue.TryParse(model.LightningMaxValue, out lightningMaxValue))
-                {
-                    ModelState.AddModelError(nameof(model.LightningMaxValue), "Invalid lightning max value");
-                }
-            }
-
-            CurrencyValue onchainMinValue = null;
-            if (!string.IsNullOrWhiteSpace(model.OnChainMinValue))
-            {
-                if (!CurrencyValue.TryParse(model.OnChainMinValue, out onchainMinValue))
-                {
-                    ModelState.AddModelError(nameof(model.OnChainMinValue), "Invalid on chain min value");
-                }
-            }
             bool needUpdate = false;
             var blob = CurrentStore.GetStoreBlob();
             var defaultPaymentMethodId = model.DefaultPaymentMethod == null ? null : PaymentMethodId.Parse(model.DefaultPaymentMethod);
@@ -430,23 +449,46 @@ namespace BTCPayServer.Controllers
             }
             SetCryptoCurrencies(model, CurrentStore);
             model.SetLanguages(_LangService, model.DefaultLang);
+            model.PaymentMethodCriteria??= new List<PaymentMethodCriteriaViewModel>();
+            for (var index = 0; index < model.PaymentMethodCriteria.Count; index++)
+            {
+                var methodCriterion = model.PaymentMethodCriteria[index];
+                if (!string.IsNullOrWhiteSpace(methodCriterion.Value))
+                {
+                    if (!CurrencyValue.TryParse(methodCriterion.Value, out var value))
+                    {
+                        model.AddModelError(viewModel => viewModel.PaymentMethodCriteria[index].Value,
+                            $"{methodCriterion.PaymentMethod}: invalid format (1.0 USD)", this);
+                    }
+                }
+            }
+            
 
             if (!ModelState.IsValid)
             {
                 return View(model);
             }
+
+            blob.PaymentMethodCriteria = model.PaymentMethodCriteria
+                .Where(viewModel => !string.IsNullOrEmpty(viewModel.Value)).Select(viewModel =>
+                {
+                    CurrencyValue.TryParse(viewModel.Value, out var cv);
+                    return new PaymentMethodCriteria() { Above = viewModel.Type == PaymentMethodCriteriaViewModel.CriteriaType.GreaterThan, Value = cv, PaymentMethod = PaymentMethodId.Parse(viewModel.PaymentMethod) };
+                }).ToList();
+
+            blob.RequiresRefundEmail = model.RequiresRefundEmail;
+            blob.LightningAmountInSatoshi = model.LightningAmountInSatoshi;
+            blob.LightningPrivateRouteHints = model.LightningPrivateRouteHints;
+            blob.OnChainWithLnInvoiceFallback = model.OnChainWithLnInvoiceFallback;
+            blob.RedirectAutomatically = model.RedirectAutomatically;
+            blob.ShowRecommendedFee = model.ShowRecommendedFee;
+            blob.RecommendedFeeBlockTarget = model.RecommendedFeeBlockTarget;
+
             blob.CustomLogo = model.CustomLogo;
             blob.CustomCSS = model.CustomCSS;
             blob.HtmlTitle = string.IsNullOrWhiteSpace(model.HtmlTitle) ? null : model.HtmlTitle;
             blob.DefaultLang = model.DefaultLang;
-            blob.RequiresRefundEmail = model.RequiresRefundEmail;
-            blob.ShowRecommendedFee = model.ShowRecommendedFee;
-            blob.RecommendedFeeBlockTarget = model.RecommendedFeeBlockTarget;
-            blob.OnChainMinValue = onchainMinValue;
-            blob.LightningMaxValue = lightningMaxValue;
-            blob.LightningAmountInSatoshi = model.LightningAmountInSatoshi;
-            blob.LightningPrivateRouteHints = model.LightningPrivateRouteHints;
-            blob.RedirectAutomatically = model.RedirectAutomatically;
+
             if (CurrentStore.SetStoreBlob(blob))
             {
                 needUpdate = true;
@@ -461,32 +503,6 @@ namespace BTCPayServer.Controllers
             {
                 storeId = CurrentStore.Id
             });
-        }
-
-        [HttpGet]
-        [Route("{storeId}")]
-        public IActionResult UpdateStore()
-        {
-            var store = HttpContext.GetStoreData();
-            if (store == null)
-                return NotFound();
-
-            var storeBlob = store.GetStoreBlob();
-            var vm = new StoreViewModel();
-            vm.Id = store.Id;
-            vm.StoreName = store.StoreName;
-            vm.StoreWebsite = store.StoreWebsite;
-            vm.NetworkFeeMode = storeBlob.NetworkFeeMode;
-            vm.AnyoneCanCreateInvoice = storeBlob.AnyoneCanInvoice;
-            vm.SpeedPolicy = store.SpeedPolicy;
-            vm.CanDelete = _Repo.CanDeleteStores();
-            AddPaymentMethods(store, storeBlob, vm);
-            vm.MonitoringExpiration = storeBlob.MonitoringExpiration;
-            vm.InvoiceExpiration = storeBlob.InvoiceExpiration;
-            vm.LightningDescriptionTemplate = storeBlob.LightningDescriptionTemplate;
-            vm.PaymentTolerance = storeBlob.PaymentTolerance;
-            vm.PayJoinEnabled = storeBlob.PayJoinEnabled;
-            return View(vm);
         }
 
 
@@ -530,20 +546,13 @@ namespace BTCPayServer.Controllers
                         vm.LightningNodes.Add(new StoreViewModel.LightningNode()
                         {
                             CryptoCode = paymentMethodId.CryptoCode,
-                            Address = lightning?.GetLightningUrl()?.BaseUri.AbsoluteUri ?? string.Empty,
-                            Enabled = !excludeFilters.Match(paymentMethodId) && lightning?.GetLightningUrl() != null
+                            Address = lightning?.GetDisplayableConnectionString(),
+                            Enabled = !excludeFilters.Match(paymentMethodId) && lightning != null
                         });
                         break;
                 }
             }
 
-            var changellyEnabled = storeBlob.ChangellySettings != null && storeBlob.ChangellySettings.Enabled;
-            vm.ThirdPartyPaymentMethods.Add(new StoreViewModel.AdditionalPaymentMethod()
-            {
-                Enabled = changellyEnabled,
-                Action = nameof(UpdateChangellySettings),
-                Provider = "Changelly"
-            });
 
             var coinSwitchEnabled = storeBlob.CoinSwitchSettings != null && storeBlob.CoinSwitchSettings.Enabled;
             vm.ThirdPartyPaymentMethods.Add(new StoreViewModel.AdditionalPaymentMethod()
@@ -552,6 +561,36 @@ namespace BTCPayServer.Controllers
                 Action = nameof(UpdateCoinSwitchSettings),
                 Provider = "CoinSwitch"
             });
+        }
+
+
+
+        [HttpGet]
+        [Route("{storeId}")]
+        public IActionResult UpdateStore()
+        {
+            var store = HttpContext.GetStoreData();
+            if (store == null)
+                return NotFound();
+
+            var storeBlob = store.GetStoreBlob();
+            var vm = new StoreViewModel();
+            vm.Id = store.Id;
+            vm.StoreName = store.StoreName;
+            vm.StoreWebsite = store.StoreWebsite;
+            vm.NetworkFeeMode = storeBlob.NetworkFeeMode;
+            vm.AnyoneCanCreateInvoice = storeBlob.AnyoneCanInvoice;
+            vm.SpeedPolicy = store.SpeedPolicy;
+            vm.CanDelete = _Repo.CanDeleteStores();
+            AddPaymentMethods(store, storeBlob, vm);
+            vm.MonitoringExpiration = (int)storeBlob.MonitoringExpiration.TotalMinutes;
+            vm.InvoiceExpiration = (int)storeBlob.InvoiceExpiration.TotalMinutes;
+            vm.LightningDescriptionTemplate = storeBlob.LightningDescriptionTemplate;
+            vm.PaymentTolerance = storeBlob.PaymentTolerance;
+            vm.PayJoinEnabled = storeBlob.PayJoinEnabled;
+            vm.HintWallet = storeBlob.Hints.Wallet;
+            vm.HintLightning = storeBlob.Hints.Lightning;
+            return View(vm);
         }
 
 
@@ -579,8 +618,8 @@ namespace BTCPayServer.Controllers
             var blob = CurrentStore.GetStoreBlob();
             blob.AnyoneCanInvoice = model.AnyoneCanCreateInvoice;
             blob.NetworkFeeMode = model.NetworkFeeMode;
-            blob.MonitoringExpiration = model.MonitoringExpiration;
-            blob.InvoiceExpiration = model.InvoiceExpiration;
+            blob.MonitoringExpiration = TimeSpan.FromMinutes(model.MonitoringExpiration);
+            blob.InvoiceExpiration = TimeSpan.FromMinutes(model.InvoiceExpiration);
             blob.LightningDescriptionTemplate = model.LightningDescriptionTemplate ?? string.Empty;
             blob.PaymentTolerance = model.PaymentTolerance;
             var payjoinChanged = blob.PayJoinEnabled != model.PayJoinEnabled;
@@ -624,7 +663,6 @@ namespace BTCPayServer.Controllers
             {
                 storeId = CurrentStore.Id
             });
-
         }
 
         [HttpGet]
@@ -662,6 +700,26 @@ namespace BTCPayServer.Controllers
         {
             var parser = new DerivationSchemeParser(network);
             parser.HintScriptPubKey = hint;
+            try
+            {
+                var derivationSchemeSettings = new DerivationSchemeSettings();
+                derivationSchemeSettings.Network = network;
+                var result = parser.ParseOutputDescriptor(derivationScheme);
+                derivationSchemeSettings.AccountOriginal = derivationScheme.Trim();
+                derivationSchemeSettings.AccountDerivation = result.Item1;
+                derivationSchemeSettings.AccountKeySettings = result.Item2?.Select((path, i) => new AccountKeySettings()
+                {
+                    RootFingerprint = path?.MasterFingerprint,
+                    AccountKeyPath = path?.KeyPath,
+                    AccountKey = result.Item1.GetExtPubKeys().ElementAt(i).GetWif(parser.Network)
+                }).ToArray() ?? new AccountKeySettings[result.Item1.GetExtPubKeys().Count()];
+                return derivationSchemeSettings;
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+            
             return new DerivationSchemeSettings(parser.Parse(derivationScheme), network);
         }
 
@@ -775,6 +833,7 @@ namespace BTCPayServer.Controllers
         }
 
         public string GeneratedPairingCode { get; set; }
+        public WebhookNotificationManager WebhookNotificationManager { get; }
 
         [HttpGet]
         [Route("{storeId}/Tokens/Create")]
@@ -973,7 +1032,6 @@ namespace BTCPayServer.Controllers
             {
                 storeId = CurrentStore.Id
             });
-
         }
     }
 }

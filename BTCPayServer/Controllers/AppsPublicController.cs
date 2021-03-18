@@ -4,6 +4,8 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
 using BTCPayServer.Filters;
@@ -38,6 +40,22 @@ namespace BTCPayServer.Controllers
         private readonly InvoiceController _InvoiceController;
         private readonly UserManager<ApplicationUser> _UserManager;
 
+        [HttpGet("/apps/{appId}")]
+        public async Task<IActionResult> RedirectToApp(string appId)
+        {
+           
+            switch ((await _AppService.GetApp(appId, null)).AppType)
+            {
+                case nameof(AppType.Crowdfund):
+                    return RedirectToAction("ViewCrowdfund", new {appId});
+                
+                case nameof(AppType.PointOfSale):
+                    return RedirectToAction("ViewPointOfSale", new {appId});
+            }
+
+            return NotFound();
+        }
+        
         [HttpGet]
         [Route("/apps/{appId}/pos/{viewType?}")]
         [XFrameOptionsAttribute(XFrameOptionsAttribute.XFrameOptions.AllowAll)]
@@ -50,6 +68,8 @@ namespace BTCPayServer.Controllers
             var numberFormatInfo = _AppService.Currencies.GetNumberFormatInfo(settings.Currency) ?? _AppService.Currencies.GetNumberFormatInfo("USD");
             double step = Math.Pow(10, -(numberFormatInfo.CurrencyDecimalDigits));
             viewType ??= settings.EnableShoppingCart ? PosViewType.Cart : settings.DefaultView;
+            var store = await _AppService.GetStore(app);
+            var storeBlob = store.GetStoreBlob();
 
             return View("PointOfSale/" + viewType, new ViewPointOfSaleViewModel()
             {
@@ -76,6 +96,7 @@ namespace BTCPayServer.Controllers
                 CustomTipText = settings.CustomTipText,
                 CustomTipPercentages = settings.CustomTipPercentages,
                 CustomCSSLink = settings.CustomCSSLink,
+                CustomLogoLink = storeBlob.CustomLogo,
                 AppId = appId,
                 Description = settings.Description,
                 EmbeddedCSS = settings.EmbeddedCSS
@@ -175,7 +196,7 @@ namespace BTCPayServer.Controllers
             var store = await _AppService.GetStore(app);
             try
             {
-                var invoice = await _InvoiceController.CreateInvoiceCore(new CreateInvoiceRequest()
+                var invoice = await _InvoiceController.CreateInvoiceCore(new BitpayCreateInvoiceRequest()
                 {
                     ItemCode = choice?.Id,
                     ItemDesc = title,
@@ -185,7 +206,9 @@ namespace BTCPayServer.Controllers
                     OrderId = orderId,
                     NotificationURL =
                             string.IsNullOrEmpty(notificationUrl) ? settings.NotificationUrl : notificationUrl,
-                    RedirectURL = redirectUrl ?? Request.GetDisplayUrl(),
+                    RedirectURL = !string.IsNullOrEmpty(redirectUrl) ? redirectUrl
+                                : !string.IsNullOrEmpty(settings.RedirectUrl) ? settings.RedirectUrl
+                                : Request.GetDisplayUrl(),
                     FullNotifications = true,
                     ExtendedNotifications = true,
                     PosData = string.IsNullOrEmpty(posData) ? null : posData,
@@ -317,7 +340,7 @@ namespace BTCPayServer.Controllers
 
             try
             {
-                var invoice = await _InvoiceController.CreateInvoiceCore(new CreateInvoiceRequest()
+                var invoice = await _InvoiceController.CreateInvoiceCore(new BitpayCreateInvoiceRequest()
                 {
                     OrderId = AppService.GetCrowdfundOrderId(appId),
                     Currency = settings.TargetCurrency,

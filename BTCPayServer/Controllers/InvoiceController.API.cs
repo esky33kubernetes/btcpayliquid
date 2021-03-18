@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Client;
 using BTCPayServer.Filters;
 using BTCPayServer.Models;
@@ -29,7 +30,7 @@ namespace BTCPayServer.Controllers
         [HttpPost]
         [Route("invoices")]
         [MediaTypeConstraint("application/json")]
-        public async Task<DataWrapper<InvoiceResponse>> CreateInvoice([FromBody] CreateInvoiceRequest invoice, CancellationToken cancellationToken)
+        public async Task<DataWrapper<InvoiceResponse>> CreateInvoice([FromBody] BitpayCreateInvoiceRequest invoice, CancellationToken cancellationToken)
         {
             if (invoice == null)
                 throw new BitpayHttpException(400, "Invalid invoice");
@@ -51,7 +52,7 @@ namespace BTCPayServer.Controllers
         }
         [HttpGet]
         [Route("invoices")]
-        public async Task<DataWrapper<InvoiceResponse[]>> GetInvoices(
+        public async Task<IActionResult> GetInvoices(
             string token,
             DateTimeOffset? dateStart = null,
             DateTimeOffset? dateEnd = null,
@@ -61,12 +62,14 @@ namespace BTCPayServer.Controllers
             int? limit = null,
             int? offset = null)
         {
+            if (User.Identity.AuthenticationType == Security.Bitpay.BitpayAuthenticationTypes.Anonymous)
+                return Forbid(Security.Bitpay.BitpayAuthenticationTypes.Anonymous);
             if (dateEnd != null)
                 dateEnd = dateEnd.Value + TimeSpan.FromDays(1); //Should include the end day
 
             var query = new InvoiceQuery()
             {
-                Count = limit,
+                Take = limit,
                 Skip = offset,
                 EndDate = dateEnd,
                 StartDate = dateStart,
@@ -79,7 +82,7 @@ namespace BTCPayServer.Controllers
             var entities = (await _InvoiceRepository.GetInvoices(query))
                             .Select((o) => o.EntityToDTO()).ToArray();
 
-            return DataWrapper.Create(entities);
+            return Json(DataWrapper.Create(entities));
         }
     }
 }

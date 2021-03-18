@@ -28,6 +28,8 @@ namespace BTCPayServer.Models.WalletViewModels
         }
 
         public List<PullPaymentModel> PullPayments { get; set; } = new List<PullPaymentModel>();
+
+        public bool HasDerivationSchemeSettings { get; set; }
     }
 
     public class NewPullPaymentModel
@@ -42,5 +44,10 @@ namespace BTCPayServer.Models.WalletViewModels
         [Required]
         [ReadOnly(true)]
         public string Currency { get; set; }
+        [MaxLength(500)]
+        [Display(Name = "Custom bootstrap CSS file")]
+        public string CustomCSSLink { get; set; }
+        [Display(Name = "Custom CSS Code")]
+        public string EmbeddedCSS { get; set; }
     }
 }

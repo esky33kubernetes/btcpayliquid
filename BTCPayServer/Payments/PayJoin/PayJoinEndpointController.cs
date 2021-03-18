@@ -5,12 +5,15 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using BTCPayServer.BIP78.Sender;
+using BTCPayServer.Data;
 using BTCPayServer.Events;
 using BTCPayServer.Filters;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
+using BTCPayServer.Services.Labels;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
 using Microsoft.AspNetCore.Cors;
@@ -141,7 +144,7 @@ namespace BTCPayServer.Payments.PayJoin
             await using var ctx = new PayjoinReceiverContext(_invoiceRepository, _explorerClientProvider.GetExplorerClient(network), _payJoinRepository);
             ObjectResult CreatePayjoinErrorAndLog(int httpCode, PayjoinReceiverWellknownErrors err, string debug)
             {
-                ctx.Logs.Write($"Payjoin error: {debug}");
+                ctx.Logs.Write($"Payjoin error: {debug}", InvoiceEventData.EventSeverity.Error);
                 return StatusCode(httpCode, CreatePayjoinError(err, debug));
             }
             var explorer = _explorerClientProvider.GetExplorerClient(network);
@@ -237,6 +240,7 @@ namespace BTCPayServer.Payments.PayJoin
             Dictionary<OutPoint, UTXO> selectedUTXOs = new Dictionary<OutPoint, UTXO>();
             PSBTOutput originalPaymentOutput = null;
             BitcoinAddress paymentAddress = null;
+            KeyPath paymentAddressIndex = null;
             InvoiceEntity invoice = null;
             DerivationSchemeSettings derivationSchemeSettings = null;
             foreach (var output in psbt.Outputs)
@@ -251,7 +255,7 @@ namespace BTCPayServer.Payments.PayJoin
                     continue;
 
                 var receiverInputsType = derivationSchemeSettings.AccountDerivation.ScriptPubKeyType();
-                if (!PayjoinClient.SupportedFormats.Contains(receiverInputsType))
+                if (receiverInputsType == ScriptPubKeyType.Legacy)
                 {
                     //this should never happen, unless the store owner changed the wallet mid way through an invoice
                     return CreatePayjoinErrorAndLog(503, PayjoinReceiverWellknownErrors.Unavailable, "Our wallet does not support payjoin");
@@ -299,6 +303,7 @@ namespace BTCPayServer.Payments.PayJoin
                 ctx.LockedUTXOs = selectedUTXOs.Select(u => u.Key).ToArray();
                 originalPaymentOutput = output;
                 paymentAddress = paymentDetails.GetDepositAddress(network.NBitcoinNetwork);
+                paymentAddressIndex = paymentDetails.KeyPath;
                 break;
             }
 
@@ -439,7 +444,7 @@ namespace BTCPayServer.Payments.PayJoin
             var originalPaymentData = new BitcoinLikePaymentData(paymentAddress,
                 originalPaymentOutput.Value,
                 new OutPoint(ctx.OriginalTransaction.GetHash(), originalPaymentOutput.Index),
-                ctx.OriginalTransaction.RBF);
+                ctx.OriginalTransaction.RBF, paymentAddressIndex);
             originalPaymentData.ConfirmationCount = -1;
             originalPaymentData.PayjoinInformation = new PayjoinInformation()
             {
@@ -454,13 +459,13 @@ namespace BTCPayServer.Payments.PayJoin
                     $"The original transaction has already been accounted"));
             }
             await _btcPayWalletProvider.GetWallet(network).SaveOffchainTransactionAsync(ctx.OriginalTransaction);
-            _eventAggregator.Publish(new InvoiceEvent(invoice, 1002, InvoiceEvent.ReceivedPayment) { Payment = payment });
+            _eventAggregator.Publish(new InvoiceEvent(invoice,InvoiceEvent.ReceivedPayment) { Payment = payment });
             _eventAggregator.Publish(new UpdateTransactionLabel()
             {
                 WalletId = new WalletId(invoice.StoreId, network.CryptoCode),
                 TransactionLabels = selectedUTXOs.GroupBy(pair => pair.Key.Hash).Select(utxo =>
-                       new KeyValuePair<uint256, List<(string color, string label)>>(utxo.Key,
-                           new List<(string color, string label)>()
+                       new KeyValuePair<uint256, List<(string color, Label label)>>(utxo.Key,
+                           new List<(string color, Label label)>()
                            {
                                 UpdateTransactionLabel.PayjoinExposedLabelTemplate(invoice.Id)
                            }))

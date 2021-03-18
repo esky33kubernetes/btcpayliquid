@@ -8,8 +8,7 @@ namespace BTCPayServer
 {
     public partial class BTCPayNetworkProvider
     {
-        readonly Dictionary<string, BTCPayNetworkBase> _Networks = new Dictionary<string, BTCPayNetworkBase>();
-
+        protected readonly Dictionary<string, BTCPayNetworkBase> _Networks = new Dictionary<string, BTCPayNetworkBase>();
 
         private readonly NBXplorerNetworkProvider _NBXplorerNetworkProvider;
         public NBXplorerNetworkProvider NBXplorerNetworkProvider
@@ -36,8 +35,8 @@ namespace BTCPayServer
         }
 
 
-        public NetworkType NetworkType { get; private set; }
-        public BTCPayNetworkProvider(NetworkType networkType)
+        public ChainName NetworkType { get; private set; }
+        public BTCPayNetworkProvider(ChainName networkType)
         {
             _NBXplorerNetworkProvider = new NBXplorerNetworkProvider(networkType);
             NetworkType = networkType;
@@ -48,7 +47,7 @@ namespace BTCPayServer
             InitLitecoin();
             InitBitcore();
             InitDogecoin();
-            InitBitcoinGold();
+            InitBGold();
             InitMonacoin();
             InitDash();
             InitFeathercoin();
@@ -57,7 +56,10 @@ namespace BTCPayServer
             InitMonero();
             InitPolis();
             InitChaincoin();
-            InitArgoneum();
+            // InitArgoneum();//their rate source is down 9/15/20.
+            InitMonetaryUnit();
+            InitEthereum();
+            InitERC20();
 
             // Assume that electrum mappings are same as BTC if not specified
             foreach (var network in _Networks.Values.OfType<BTCPayNetwork>())
@@ -76,7 +78,7 @@ namespace BTCPayServer
             }
 
             // Disabled because of https://twitter.com/Cryptopia_NZ/status/1085084168852291586
-            //InitBitcoinplus();
+            //InitBPlus();
             //InitUfo();
 #endif
         }

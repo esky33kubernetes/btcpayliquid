@@ -26,7 +26,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBXplorer;
-using AuthenticationSchemes = BTCPayServer.Security.AuthenticationSchemes;
+using AuthenticationSchemes = BTCPayServer.Abstractions.Constants.AuthenticationSchemes;
 
 namespace BTCPayServer.Tests
 {
@@ -91,7 +91,7 @@ namespace BTCPayServer.Tests
         {
             if (!Directory.Exists(_Directory))
                 Directory.CreateDirectory(_Directory);
-            string chain = NBXplorerDefaultSettings.GetFolderName(NetworkType.Regtest);
+            string chain = NBXplorerDefaultSettings.GetFolderName(ChainName.Regtest);
             string chainDirectory = Path.Combine(_Directory, chain);
             if (!Directory.Exists(chainDirectory))
                 Directory.CreateDirectory(chainDirectory);
@@ -112,7 +112,7 @@ namespace BTCPayServer.Tests
 
             if (UseLightning)
             {
-                config.AppendLine($"btc.lightning={IntegratedLightning.AbsoluteUri}");
+                config.AppendLine($"btc.lightning={IntegratedLightning}");
                 var localLndBackupFile = Path.Combine(_Directory, "walletunlock.json");
                 File.Copy(TestUtils.GetTestDataFullPath("LndSeedBackup/walletunlock.json"), localLndBackupFile, true);
                 config.AppendLine($"btc.external.lndseedbackup={localLndBackupFile}");
@@ -206,9 +206,9 @@ namespace BTCPayServer.Tests
                 bitflyerMock.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("BTC_JPY"), new BidAsk(700000m)));
                 rateProvider.Providers.Add("bitflyer", bitflyerMock);
 
-                var quadrigacx = new MockRateProvider();
-                quadrigacx.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("BTC_CAD"), new BidAsk(6000m)));
-                rateProvider.Providers.Add("quadrigacx", quadrigacx);
+                var ndax = new MockRateProvider();
+                ndax.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("BTC_CAD"), new BidAsk(6000m)));
+                rateProvider.Providers.Add("ndax", ndax);
 
                 var bittrex = new MockRateProvider();
                 bittrex.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("DOGE_BTC"), new BidAsk(0.004m)));
@@ -222,6 +222,9 @@ namespace BTCPayServer.Tests
                 var bitpay = new MockRateProvider();
                 bitpay.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("ETB_BTC"), new BidAsk(0.1m)));
                 rateProvider.Providers.Add("bitpay", bitpay);
+                var kraken = new MockRateProvider();
+                kraken.ExchangeRates.Add(new PairRate(CurrencyPair.Parse("ETH_BTC"), new BidAsk(0.1m)));
+                rateProvider.Providers.Add("kraken", kraken);
             }
 
 
@@ -266,7 +269,7 @@ namespace BTCPayServer.Tests
         public InvoiceRepository InvoiceRepository { get; private set; }
         public StoreRepository StoreRepository { get; private set; }
         public BTCPayNetworkProvider Networks { get; private set; }
-        public Uri IntegratedLightning { get; internal set; }
+        public string IntegratedLightning { get; internal set; }
         public bool InContainer { get; internal set; }
 
         public T GetService<T>()

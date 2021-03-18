@@ -2,10 +2,13 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Client;
 using BTCPayServer.Client.Models;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Lightning;
+using BTCPayServer.Security;
 using BTCPayServer.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Newtonsoft.Json.Linq;
@@ -32,13 +35,16 @@ namespace BTCPayServer.Controllers.GreenField
         private readonly BTCPayNetworkProvider _btcPayNetworkProvider;
         private readonly BTCPayServerEnvironment _btcPayServerEnvironment;
         private readonly CssThemeManager _cssThemeManager;
+        private readonly IAuthorizationService _authorizationService;
 
         protected LightningNodeApiController(BTCPayNetworkProvider btcPayNetworkProvider,
-            BTCPayServerEnvironment btcPayServerEnvironment, CssThemeManager cssThemeManager)
+            BTCPayServerEnvironment btcPayServerEnvironment, CssThemeManager cssThemeManager,
+            IAuthorizationService authorizationService)
         {
             _btcPayNetworkProvider = btcPayNetworkProvider;
             _btcPayServerEnvironment = btcPayServerEnvironment;
             _cssThemeManager = cssThemeManager;
+            _authorizationService = authorizationService;
         }
 
         public virtual async Task<IActionResult> GetInfo(string cryptoCode)
@@ -139,7 +145,7 @@ namespace BTCPayServer.Controllers.GreenField
                 ModelState.AddModelError(nameof(request.FeeRate), "FeeRate must be more than 0");
             }
 
-            if (ModelState.IsValid)
+            if (!ModelState.IsValid)
             {
                 return this.CreateValidationError(ModelState);
             }
@@ -263,13 +269,21 @@ namespace BTCPayServer.Controllers.GreenField
             {
                 return this.CreateValidationError(ModelState);
             }
-            var invoice = await lightningClient.CreateInvoice(
-                new CreateInvoiceParams(request.Amount, request.Description, request.Expiry)
-                {
-                    PrivateRouteHints = request.PrivateRouteHints
-                },
-                CancellationToken.None);
-            return Ok(ToModel(invoice));
+
+            try
+            {
+                var invoice = await lightningClient.CreateInvoice(
+                    new CreateInvoiceParams(request.Amount, request.Description, request.Expiry)
+                    {
+                        PrivateRouteHints = request.PrivateRouteHints
+                    },
+                    CancellationToken.None);
+                return Ok(ToModel(invoice));
+            }
+            catch (Exception ex)
+            {
+                return this.CreateAPIError("generic-error", ex.Message);
+            }
         }
 
         private LightningInvoiceData ToModel(LightningInvoice invoice)
@@ -286,10 +300,11 @@ namespace BTCPayServer.Controllers.GreenField
             };
         }
 
-        protected bool CanUseInternalLightning(bool doingAdminThings)
+        protected async Task<bool> CanUseInternalLightning(bool doingAdminThings)
         {
-            return (_btcPayServerEnvironment.IsDeveloping || User.IsInRole(Roles.ServerAdmin) ||
-                    (_cssThemeManager.AllowLightningInternalNodeForAll && !doingAdminThings));
+            return (!doingAdminThings && _cssThemeManager.AllowLightningInternalNodeForAll) ||
+                (await _authorizationService.AuthorizeAsync(User, null,
+                    new PolicyRequirement(Policies.CanUseInternalLightningNode))).Succeeded;
         }
 
         protected abstract Task<ILightningClient> GetLightningClient(string cryptoCode, bool doingAdminThings);

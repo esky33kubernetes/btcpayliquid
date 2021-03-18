@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using BTCPayServer.Client.Models;
 using NBitcoin;
 using Newtonsoft.Json;
@@ -16,7 +17,8 @@ namespace BTCPayServer.Payments.Bitcoin
 
         public decimal GetNextNetworkFee()
         {
-            return NextNetworkFee.ToDecimal(MoneyUnit.BTC);
+            // NextNetworkFee is sometimes not initialized properly, so we return 0 in that case
+            return NextNetworkFee?.ToDecimal(MoneyUnit.BTC) ?? 0;
         }
 
         public decimal GetFeeRate()
@@ -24,9 +26,10 @@ namespace BTCPayServer.Payments.Bitcoin
             return FeeRate.SatoshiPerByte;
         }
 
-        public void SetPaymentDestination(string newPaymentDestination)
+        public void SetPaymentDetails(IPaymentMethodDetails newPaymentMethodDetails)
         {
-            DepositAddress = newPaymentDestination;
+            DepositAddress = newPaymentMethodDetails.GetPaymentDestination();
+            KeyPath = (newPaymentMethodDetails as BitcoinLikeOnChainPaymentMethod)?.KeyPath;
         }
         public NetworkFeeMode NetworkFeeMode { get; set; }
 
@@ -51,7 +54,9 @@ namespace BTCPayServer.Payments.Bitcoin
         [JsonIgnore]
         public Money NextNetworkFee { get; set; }
         [JsonIgnore]
-        public String DepositAddress { get; set; }
+        public String DepositAddress { get; set; }        
+        [JsonConverter(typeof(NBitcoin.JsonConverters.KeyPathJsonConverter))]
+        public KeyPath KeyPath { get; set; }
 
         public BitcoinAddress GetDepositAddress(Network network)
         {

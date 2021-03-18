@@ -1,6 +1,7 @@
 using System;
 using System.Text.Encodings.Web;
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Data;
 using BTCPayServer.Models.ManageViewModels;
 using BTCPayServer.Security;
@@ -81,7 +82,6 @@ namespace BTCPayServer.Controllers
             {
                 Username = user.UserName,
                 Email = user.Email,
-                PhoneNumber = user.PhoneNumber,
                 IsEmailConfirmed = user.EmailConfirmed
             };
             return View(model);
@@ -96,8 +96,6 @@ namespace BTCPayServer.Controllers
                 return View(model);
             }
 
-            bool needUpdate = false;
-
             var user = await _userManager.GetUserAsync(User);
             if (user == null)
             {
@@ -107,33 +105,22 @@ namespace BTCPayServer.Controllers
             var email = user.Email;
             if (model.Email != email)
             {
+                if (!(await _userManager.FindByEmailAsync(model.Email) is null))
+                {
+                    TempData[WellKnownTempData.ErrorMessage] = "The email address is already in use with an other account.";
+                    return RedirectToAction(nameof(Index));
+                }
+                var setUserResult = await _userManager.SetUserNameAsync(user, model.Email);
+                if (!setUserResult.Succeeded)
+                {
+                    throw new ApplicationException($"Unexpected error occurred setting email for user with ID '{user.Id}'.");
+                }
                 var setEmailResult = await _userManager.SetEmailAsync(user, model.Email);
                 if (!setEmailResult.Succeeded)
                 {
                     throw new ApplicationException($"Unexpected error occurred setting email for user with ID '{user.Id}'.");
                 }
-                await _userManager.SetUserNameAsync(user, model.Username);
             }
-
-            var phoneNumber = user.PhoneNumber;
-            if (model.PhoneNumber != phoneNumber)
-            {
-                var setPhoneResult = await _userManager.SetPhoneNumberAsync(user, model.PhoneNumber);
-                if (!setPhoneResult.Succeeded)
-                {
-                    throw new ApplicationException($"Unexpected error occurred setting phone number for user with ID '{user.Id}'.");
-                }
-            }
-
-            if (needUpdate)
-            {
-                var result = await _userManager.UpdateAsync(user);
-                if (!result.Succeeded)
-                {
-                    throw new ApplicationException($"Unexpected error occurred updating user with ID '{user.Id}'.");
-                }
-            }
-
             TempData[WellKnownTempData.SuccessMessage] = "Your profile has been updated";
             return RedirectToAction(nameof(Index));
         }

@@ -65,7 +65,8 @@ namespace BTCPayServer.Client
         protected async Task<T> HandleResponse<T>(HttpResponseMessage message)
         {
             await HandleResponse(message);
-            return JsonConvert.DeserializeObject<T>(await message.Content.ReadAsStringAsync());
+            var str = await message.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<T>(str);
         }
 
         protected virtual HttpRequestMessage CreateHttpRequest(string path,
@@ -103,29 +104,37 @@ namespace BTCPayServer.Client
             return request;
         }
 
-        private static void AppendPayloadToQuery(UriBuilder uri, Dictionary<string, object> payload)
+        public static void AppendPayloadToQuery(UriBuilder uri, KeyValuePair<string, object> keyValuePair)
+        {
+            if (uri.Query.Length > 1)
+                uri.Query += "&";
+
+            UriBuilder uriBuilder = uri;
+            if (!(keyValuePair.Value is string) &&
+                keyValuePair.Value.GetType().GetInterfaces().Contains((typeof(IEnumerable))))
+            {
+                foreach (var item in (IEnumerable)keyValuePair.Value)
+                {
+                    uriBuilder.Query = uriBuilder.Query + Uri.EscapeDataString(keyValuePair.Key) + "=" +
+                                       Uri.EscapeDataString(item.ToString()) + "&";
+                }
+            }
+            else
+            {
+                uriBuilder.Query = uriBuilder.Query + Uri.EscapeDataString(keyValuePair.Key) + "=" +
+                                   Uri.EscapeDataString(keyValuePair.Value.ToString()) + "&";
+            }
+            uri.Query = uri.Query.Trim('&');
+        }
+
+        public static void AppendPayloadToQuery(UriBuilder uri, Dictionary<string, object> payload)
         {
             if (uri.Query.Length > 1)
                 uri.Query += "&";
             foreach (KeyValuePair<string, object> keyValuePair in payload)
             {
-                UriBuilder uriBuilder = uri;
-                if (!(keyValuePair.Value is string) && keyValuePair.Value.GetType().GetInterfaces().Contains((typeof(IEnumerable))))
-                {
-                    foreach (var item in (IEnumerable)keyValuePair.Value)
-                    {
-                        uriBuilder.Query = uriBuilder.Query + Uri.EscapeDataString(keyValuePair.Key) + "=" +
-                                           Uri.EscapeDataString(item.ToString()) + "&";
-                    }
-                }
-                else
-                {
-                    uriBuilder.Query = uriBuilder.Query + Uri.EscapeDataString(keyValuePair.Key) + "=" +
-                                       Uri.EscapeDataString(keyValuePair.Value.ToString()) + "&";
-                }
+                AppendPayloadToQuery(uri, keyValuePair);
             }
-
-            uri.Query = uri.Query.Trim('&');
         }
     }
 }
